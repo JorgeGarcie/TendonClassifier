@@ -206,7 +206,7 @@ def main():
         model, epoch, metric = train_utils.load_checkpoint(
             model, args.checkpoint, device
         )
-        best_miou = metric["val_miou"]
+        best_miou = metric["model_miou"]
         train_loss_list = metric["train_loss_list"]
         train_miou_list = metric["train_miou_list"]
         val_loss_list = metric["val_loss_list"]
@@ -230,6 +230,7 @@ def main():
 
     # Train and validate the model
     max_epochs = 30
+    newly_saved = False
     while epoch <= max_epochs:
         print("Epoch (", epoch, "/", max_epochs, ")")
         train_loss, train_miou = train(
@@ -248,6 +249,7 @@ def main():
                 model,
                 epoch,
                 {
+                    "model_miou": best_miou,
                     "train_loss_list": train_loss_list,
                     "train_miou_list": train_miou_list,
                     "val_loss_list": val_loss_list,
@@ -255,6 +257,7 @@ def main():
                 },
                 filename="checkpoint.pth.tar",
             )
+            newly_saved = True
         train_utils.save_learning_curve(
             metrics={
                 "train_loss": train_loss_list,
@@ -272,9 +275,14 @@ def main():
     load_dir = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "../checkpoints/"
     )
-    model, _, _ = train_utils.load_checkpoint(
-        model, os.path.join(load_dir, "checkpoint.pth.tar"), device
-    )
+    if newly_saved:
+        model, _, _ = train_utils.load_checkpoint(
+            model, os.path.join(load_dir, "checkpoint.pth.tar"), device
+        )
+    else:
+        model, _, _ = train_utils.load_checkpoint(
+            model, os.path.join(load_dir, args.checkpoint), device
+        )
     save_prediction(model, device, val_loader, val_dataset, root_dir)
     # save_prediction(model, device, test_loader, test_dir)
     train_utils.save_learning_curve(
