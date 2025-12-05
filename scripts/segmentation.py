@@ -163,14 +163,43 @@ def val(model, device, val_loader, criterion):
     return val_loss, val_iou
 
 
+def test(model, test_loader, device):
+    """
+    Test the model on the test dataset and return mIoU.
+    """
+    model.eval()
+    test_iou_sum = 0
+    data_size = 0
+
+    test_bar = tqdm(test_loader, desc="Testing")
+
+    with torch.no_grad():
+        for batch in test_bar:
+            batch_size = batch["input"].size(0)
+            output = model(batch["input"].to(device))
+            target = batch["target"].to(device)
+
+            data_size += batch_size
+            test_iou_sum += np.sum(iou(output, target))
+
+    test_miou = test_iou_sum / data_size
+    return test_miou
+
+
 def main():
     train_utils.setup_single_threaded_torch()
+
     # Load arguments
     parser = ArgumentParser()
     parser.add_argument(
         "--checkpoint",
         default=None,
         help="Path to a checkpoint file to initialize the model with. Training will resume from the epoch saved in the checkpoint.",
+    )
+    parser.add_argument(
+        "--test_only",
+        action="store_true",
+        help="If set, only run testing on the test set after loading the checkpoint.",
     )
     args = parser.parse_args()
 
@@ -183,6 +212,9 @@ def main():
     # Create Datasets.
     # Load all dataset (assumes has_gt=True)
     full_dataset = CVATDataset(dataset_dir=root_dir, has_gt=True, for_segmentation=True)
+    test_dataset = CVATDataset(
+        dataset_dir=root_dir, has_gt=True, for_segmentation=True, for_test=True
+    )
 
     # Filter to only indices with objects
     original_indices_with_objects = [
@@ -229,9 +261,9 @@ def main():
     val_loader = DataLoader(
         val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS
     )
-    # test_loader = DataLoader(
-    #     test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS
-    # )
+    test_loader = DataLoader(
+        test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS
+    )
 
     # Prepare model
     model = MiniUNet().to(device)
@@ -252,7 +284,7 @@ def main():
         val_loss_list = metric["val_loss_list"]
         val_miou_list = metric["val_miou_list"]
         print(
-            f"Loaded a checkpoint from {args.checkpoint} at epoch {epoch} with best mIoU {best_miou}. Resuming training from epoch {epoch + 1}."
+            f"Loaded a checkpoint from {args.checkpoint} at epoch {epoch} with best mIoU {best_miou}."
         )
         epoch += 1  # start training from the next epoch
     else:
@@ -269,57 +301,61 @@ def main():
             f"No checkpoint provided. Starting training from scratch at epoch {epoch}."
         )
 
-    # Train and validate the model
-    max_epochs = 29
-    newly_saved = False
-    while epoch <= max_epochs:
-        print("Epoch (", epoch, "/", max_epochs, ")")
-        train_loss, train_miou, train_batch_loss = train(
-            model, device, train_loader, criterion, optimizer
-        )
-        val_loss, val_miou = val(model, device, val_loader, criterion)
-        train_loss_list.append(train_loss)
-        train_miou_list.append(train_miou)
-        train_batch_loss_list.extend(train_batch_loss)
-        val_loss_list.append(val_loss)
-        val_miou_list.append(val_miou)
-        print("Train loss & mIoU: %0.2f %0.2f" % (train_loss, train_miou))
-        print("Validation loss & mIoU: %0.2f %0.2f" % (val_loss, val_miou))
-        if val_miou > best_miou:
-            best_miou = val_miou
-            train_utils.save_checkpoint(
-                model,
-                epoch,
-                {
-                    "model_miou": best_miou,
-                    "train_loss_list": train_loss_list,
-                    "train_batch_loss_list": train_batch_loss_list,
-                    "train_miou_list": train_miou_list,
-                    "val_loss_list": val_loss_list,
-                    "val_miou_list": val_miou_list,
-                },
-                filename="checkpoint.pth.tar",
+    if not args.test_only:
+        # Train and validate the model
+        print(f"Training from epoch {epoch}...")
+        max_epochs = 29
+        newly_saved = False
+        while epoch <= max_epochs:
+            print("Epoch (", epoch, "/", max_epochs, ")")
+            train_loss, train_miou, train_batch_loss = train(
+                model, device, train_loader, criterion, optimizer
             )
-            newly_saved = True
-        train_utils.save_learning_curve(
-            metrics={
-                "train_loss": train_loss_list,
-                "val_loss": val_loss_list,
-                "train_miou": train_miou_list,
-                "val_miou": val_miou_list,
-            },
-            filename="learning_curve.png",
-            title="Segmentation Training Curve",
-        )
-        train_utils.save_batch_loss_curve(
-            train_batch_loss_list,
-            train_loss_list,
-            total_batches_per_epoch=len(train_loader),
-            filename="batch_loss_curve.png",
-            plot_interval=10,
-        )
-        print("---------------------------------")
-        epoch += 1
+            val_loss, val_miou = val(model, device, val_loader, criterion)
+            train_loss_list.append(train_loss)
+            train_miou_list.append(train_miou)
+            train_batch_loss_list.extend(train_batch_loss)
+            val_loss_list.append(val_loss)
+            val_miou_list.append(val_miou)
+            print("Train loss & mIoU: %0.2f %0.2f" % (train_loss, train_miou))
+            print("Validation loss & mIoU: %0.2f %0.2f" % (val_loss, val_miou))
+            if val_miou > best_miou:
+                best_miou = val_miou
+                train_utils.save_checkpoint(
+                    model,
+                    epoch,
+                    {
+                        "model_miou": best_miou,
+                        "train_loss_list": train_loss_list,
+                        "train_batch_loss_list": train_batch_loss_list,
+                        "train_miou_list": train_miou_list,
+                        "val_loss_list": val_loss_list,
+                        "val_miou_list": val_miou_list,
+                    },
+                    filename="checkpoint.pth.tar",
+                )
+                newly_saved = True
+            train_utils.save_learning_curve(
+                metrics={
+                    "train_loss": train_loss_list,
+                    "val_loss": val_loss_list,
+                    "train_miou": train_miou_list,
+                    "val_miou": val_miou_list,
+                },
+                filename="learning_curve.png",
+                title="Segmentation Training Curve",
+            )
+            train_utils.save_batch_loss_curve(
+                train_batch_loss_list,
+                train_loss_list,
+                total_batches_per_epoch=len(train_loader),
+                filename="batch_loss_curve.png",
+                plot_interval=10,
+            )
+            print("---------------------------------")
+            epoch += 1
+    else:
+        newly_saved = False
 
     # Load the best checkpoint, use save_prediction() on the validation set and test set
     load_dir = os.path.join(
@@ -332,7 +368,9 @@ def main():
     else:
         model, _, _ = train_utils.load_checkpoint(model, args.checkpoint, device)
     save_prediction(model, device, val_loader, val_dataset, root_dir)
-    # save_prediction(model, device, test_loader, test_dir)
+    test_dir = os.path.join(root_dir, "test_results/")
+    os.makedirs(test_dir, exist_ok=True)
+    save_prediction(model, device, test_loader, test_dataset, test_dir)
     train_utils.save_learning_curve(
         metrics={
             "train_loss": train_loss_list,
@@ -343,6 +381,8 @@ def main():
         filename="learning_curve.png",
         title="Segmentation Training Curve",
     )
+    test_miou = test(model, test_loader, device)
+    print(f"Test mIoU: {test_miou:.4f}")
 
 
 if __name__ == "__main__":

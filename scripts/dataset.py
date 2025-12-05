@@ -29,6 +29,7 @@ class CVATDataset(Dataset):
         self.has_gt = has_gt
         self.img_size = img_size  # (H, W)
         self.for_segmentation = for_segmentation
+        self.for_test = for_test
 
         # Store original files and features
         self.original_img_files = []
@@ -48,7 +49,12 @@ class CVATDataset(Dataset):
         # Collect image and mask names. Use p1-p3 for train/val, p4 for test
         if for_test:
             images_path = os.path.join(self.dataset_dir, "p4", "images")
+            masks_path = os.path.join(self.dataset_dir, "p4", "masks")
             self.original_img_files.extend(sorted(os.listdir(images_path)))
+            if self.has_gt:
+                self.mask_basenames.update(
+                    {os.path.splitext(frame)[0] for frame in os.listdir(masks_path)}
+                )
         else:
             videos = ["p1", "p2", "p3"]
             for vid in videos:
@@ -79,24 +85,24 @@ class CVATDataset(Dataset):
 
         # Calculate the total augmented length
         self.total_original_files = len(self.original_img_files)
-        if self.for_segmentation:
+        if self.for_segmentation and not self.for_test:
             print(
                 f"Augmenting dataset size by a factor of {1 + AUGMENTATION_FACTOR}..."
             )
         else:
             print(
-                f"Dataset initialized for classification with {self.total_original_files} original images."
+                f"Dataset initialized with {self.total_original_files} original images."
             )
 
     def __len__(self):
         # The total length is the original number of files multiplied by (1 + AUGMENTATION_FACTOR)
-        if self.for_segmentation:
+        if self.for_segmentation and not self.for_test:
             return self.total_original_files * (1 + AUGMENTATION_FACTOR)
         else:
             return self.total_original_files
 
     def __getitem__(self, idx):
-        if self.for_segmentation:
+        if self.for_segmentation and not self.for_test:
             # Determine the index of the original file and the augmentation ID
             original_idx = idx // (1 + AUGMENTATION_FACTOR)
             augmentation_id = idx % (
