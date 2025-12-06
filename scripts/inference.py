@@ -298,7 +298,7 @@ def benchmark_pipeline(
                     interpolation=cv2.INTER_NEAREST,
                 )
                 overlay = final_frame.copy()
-                overlay[mask_vis == 1] = (0, 0, 255)  # Red
+                overlay[mask_vis == 1] = (0, 255, 0)  # Green
                 cv2.addWeighted(overlay, 0.5, final_frame, 0.5, 0, final_frame)
 
                 if centroid is not None:
@@ -366,14 +366,14 @@ def benchmark_pipeline(
 
 if __name__ == "__main__":
     DATA_DIR = "../data"
-    DET_CKPT = "checkpoints/classifier_mobilenetv3_small.pth.tar"
-    SEG_CKPT = "checkpoints/checkpoint.pth.tar"
+    DET_CKPT = "checkpoints/classifier_mobilenetv3_small-2025-12-04.pth.tar"
+    SEG_CKPT = "checkpoints/checkpoint-segmentation-2025-12-04.pth.tar"
 
     benchmark_pipeline(
         DATA_DIR,
         DET_CKPT,
         SEG_CKPT,
         multi_crop=False,
-        num_samples=600,
+        num_samples=784,
         output_video="output/inference_output.mp4",
     )
