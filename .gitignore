@@ -1,7 +1,6 @@
 /.vscode
 /data
 *.zip
-<<<<<<< HEAD
 *.json
 *.csv
 *.npy
@@ -9,9 +8,7 @@
 *.png
 __pycache__
 rawdata
-=======
 /old_data
 /output
 *.pyc
 __pycache__/
->>>>>>> fea83209d434aacb3f431c5d88a579b0d9a47e3e

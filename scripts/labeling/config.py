@@ -1,12 +1,11 @@
 """
 Configuration file for tendon labeling and mask generation pipeline.
 """
-
-# Paths
-DATA_ROOT = r"C:\Users\georg\Documents\Stanford\cs230\cs230-proj\scripts\labeling\rawdata"
-CONFIGS_ROOT = r"C:\Users\georg\Documents\Stanford\cs230\cs230-proj\scripts\labeling\configs"
-OUTPUT_ROOT = r"C:\Users\georg\Documents\Stanford\cs230\cs230-proj\scripts\labeling\output"
-STL_DIR = r"C:\Users\georg\Documents\Stanford\cs230\cs230-proj\scripts\labeling\rawdata"
+# Paths (relative to labeling directory)
+DATA_ROOT = "rawdata"
+CONFIGS_ROOT = "configs"
+OUTPUT_ROOT = "output"
+STL_DIR = "rawdata"
 
 # Phantom configuration file (maps phantom + motion type → STL file + rotation)
 PHANTOM_CONFIGS_FILE = "phantom_configs.json"
