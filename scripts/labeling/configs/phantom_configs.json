@@ -1,0 +1,22 @@
+{
+  "p1": {
+    "default": {"stl_file": "p1.stl", "rotation_deg": 0},
+    "n2t": {"stl_file": "p1n2t.stl", "rotation_deg": 0},
+    "t2n": {"stl_file": "p1n2t.stl", "rotation_deg": 180},
+    "n2t2n": {"stl_file": "p1.stl", "rotation_deg": 0}
+  },
+  "p2": {
+    "default": {"stl_file": "p2.stl", "rotation_deg": 0},
+    "d2s": {"stl_file": "p2.stl", "rotation_deg": 0},
+    "s2d": {"stl_file": "p2.stl", "rotation_deg": 180}
+  },
+  "p3": {
+    "default": {"stl_file": "p3.stl", "rotation_deg": 0},
+    "thicker2thinner": {"stl_file": "p3.stl", "rotation_deg": 180},
+    "thinner2thicker": {"stl_file": "p3.stl", "rotation_deg": 0}
+  },
+  "p4": {
+    "default": {"stl_file": "p4.stl", "rotation_deg": 0},
+    "m2s": {"stl_file": "p4.stl", "rotation_deg": 0}
+  }
+}
