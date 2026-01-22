@@ -1,7 +1,8 @@
 /.vscode
 /data
 *.zip
-*.json
+run_manifest.json
+valid_frames.json
 *.csv
 *.npy
 *.jpg
@@ -12,3 +13,4 @@ rawdata
 /output
 *.pyc
 __pycache__/
+description
