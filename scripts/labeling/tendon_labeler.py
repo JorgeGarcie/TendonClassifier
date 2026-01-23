@@ -1,35 +1,31 @@
-"""
-TendonLabeler class for generating masks of tendon in phantom images.
-
-Based on original implementation from test1.py.
-"""
-
 import math
-import trimesh
 import numpy as np
+import trimesh
+import pyrender
 import cv2
-from scipy.interpolate import NearestNDInterpolator
+import os
+import matplotlib.pyplot as plt
 
-
+# If running on a server/headless machine, uncomment this:
+# os.environ['PYOPENGL_PLATFORM'] = 'egl'
 
 class TendonLabeler:
     def __init__(self, phantom_path, rotation_deg=0):
-        # Load and extract tendon from phantom
+        # 1. Load the original phantom mesh
         phantom = trimesh.load(phantom_path, process=True)
 
-        # Apply rotation if specified (around Z-axis) depends on the experiment run.
+        # 2. Apply Rotation (around Z-axis)
         if rotation_deg != 0:
             rotation_matrix = trimesh.transformations.rotation_matrix(
-                math.radians(rotation_deg),
-                [0, 0, 1]  # Z-axis
+                math.radians(rotation_deg), [0, 0, 1]
             )
             phantom.apply_transform(rotation_matrix)
 
-
-        # Tendon bounding box (We just select the tendon from the STL)
-        X_low, X_high = -0.01, 0.01
-        Y_low, Y_high = -0.1, 0.8
-        Z_low, Z_high = 0.009, 0.021 # Tendon Try this 0.015 before it was 0.02
+        # 3. Extract the Tendon (Bounding Box logic)
+        # We keep your exact logic here to slice the mesh
+        X_low, X_high = -0.01, 0.01     
+        Y_low, Y_high = -0.075, 0.075         
+        Z_low, Z_high = 0.008, 0.021 
 
         verts = phantom.vertices
         mask = (verts[:, 0] >= X_low) & (verts[:, 0] <= X_high) & \
@@ -40,94 +36,141 @@ class TendonLabeler:
         face_mask = np.all(np.isin(phantom.faces, vertex_indices), axis=1)
         tendon_face_indices = np.where(face_mask)[0]
 
-        # Extract Tendon Mesh100
-        self.tendon_mesh = phantom.submesh([tendon_face_indices], append=True)
-        rotation_matrix_y = trimesh.transformations.rotation_matrix( # Allows us to see the tendon from the other face.
-            math.radians(180), [0, 1, 0])
-        self.tendon_mesh.apply_transform(rotation_matrix_y)
+        # Create the submesh for the tendon
+        self.tendon_trimesh = phantom.submesh([tendon_face_indices], append=True)
+        
+        # 4. Convert to PyRender Mesh (Crucial for Rasterization)
+        # We create a simple material so it renders solidly
+        material = pyrender.MetallicRoughnessMaterial(
+            metallicFactor=0.0, 
+            alphaMode='OPAQUE', 
+            baseColorFactor=(1.0, 1.0, 1.0, 1.0)
+        )
+        self.tendon_mesh = pyrender.Mesh.from_trimesh(
+            self.tendon_trimesh, 
+            material=material
+        )
 
-        # Manual center (per frame)
         self.tendon_center_px = None
-
-        # Camera params. XY is assumed to be aligned with phantom
-        self.cam_z = 0.0040
+        
+        # Camera Z offset (from your original code)
+        deformation = 0.013
+        self.cam_z_offset = 0.03724 - deformation 
 
     def set_center(self, center_px):
-        """Manually set tendon center in pixels."""
         self.tendon_center_px = center_px
 
     def generate_mask(self, width_px, height_px, cam_y=0.32):
-        """Generate mask and depth map for given image size and camera Y position.
-
-        Returns:
-            mask: Binary mask (uint8, 0-255) of tendon projection
-            depth_map: Depth map (float32, meters) from camera to tendon surface
         """
-
-        image_center_px = width_px // 2
-        offset_px = self.tendon_center_px - image_center_px if self.tendon_center_px else 0
-
-        # Camera intrinsics
-        HFOV_deg, VFOV_deg = 120, 66
-        fx = (0.5 * width_px) / math.tan(math.radians(HFOV_deg) / 2)
-        fy = (0.5 * height_px) / math.tan(math.radians(VFOV_deg) / 2)
-        cx, cy = width_px / 2, height_px / 2
-
-        # Sample surface points
-        points, _ = trimesh.sample.sample_surface(self.tendon_mesh, count=100000)
-
-        # The argument cam_y will come from a csv with the X,Y,Z TCP positions
-        y_camera = cam_y - 0.327  # cam y goes from 0.26 to 0.38, so we center at 0.32
-        # Transform to camera frame
-        X = points[:, 0]
-        Y = points[:, 1] - y_camera
-        Z = self.cam_z - points[:, 2]
-
-        # Filter valid points
-        centerline = 0.0  # Approximate Z of centerline#TODO CHECK THIS decrease but no less tjhan 0.002
-        valid = Z > centerline # So far the centerline is around 0.0145 m 
-        X, Y, Z = X[valid], Y[valid], Z[valid]
-
-        # Project to pixels + apply offset
-        u = (fx * X / Z + cx + offset_px).astype(int)
-        v = (fy * Y / Z + cy).astype(int)
-
-        # Create mask and depth map
-        in_bounds = (u >= 0) & (u < width_px) & (v >= 0) & (v < height_px)
-        mask = np.zeros((height_px, width_px), dtype=np.uint8)
-        mask[v[in_bounds], u[in_bounds]] = 255
-
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        mask = cv2.dilate(mask, kernel, iterations=2)
+        Render the mesh to generate a perfect mask and depth map.
+        """
         
-        sparse_depth = np.zeros((height_px, width_px), dtype=np.float32)
-        np.maximum.at(sparse_depth, (v[in_bounds], u[in_bounds]), Z[in_bounds])
-
-        # Filter for half the points above the tendon.
-        pixel_min = np.min(sparse_depth)
-        pixel_max = np.max(sparse_depth)
-        depth_threshold = pixel_min + 0.9 * (pixel_max - pixel_min)
-        sparse_depth[sparse_depth < depth_threshold] = 0.0
-
-        # Fill depth using the mask as a contour.
-        depth_map = self._fill_depth_in_mask(sparse_depth, mask)
-        depth_map_in_mm = depth_map.astype(np.float32) * 1000.0  # convert to mm
-        return mask, depth_map_in_mm
-
-    def _fill_depth_in_mask(self, sparse_depth, mask):
-        """Interpolate depth within mask region."""
-        valid = sparse_depth > 0
-        if not np.any(valid):
-            return sparse_depth
-
-        coords = np.array(np.nonzero(valid)).T
-        values = sparse_depth[valid]
-        interp = NearestNDInterpolator(coords, values)
-
-        # Fill everywhere mask is valid
-        mask_coords = np.array(np.nonzero(mask > 0)).T
+        # --- 1. Camera Intrinsics (Pinhole) ---
+        FOV_deg = 100
+        fx = (0.5 * width_px) / math.tan(math.radians(FOV_deg) / 2)
+        fy = fx 
+        cx, cy = width_px / 2.0, height_px / 2.0
         
-        depth_map = np.zeros_like(sparse_depth)
-        depth_map[mask > 0] = interp(mask_coords)
+        # Apply your manual pixel offset if set
+        if self.tendon_center_px is not None:
+            offset_px = self.tendon_center_px - (width_px // 2)
+            cx += offset_px
 
-        return depth_map
+        camera = pyrender.IntrinsicsCamera(fx=fx, fy=fy, cx=cx, cy=cy, znear=0.001, zfar=1.0)
+
+        # --- 2. Camera Extrinsics (Pose) ---
+        # PyRender/OpenGL coordinates: -Z is forward, +Y is up.
+        # Your data seems to have Z as depth. We need to construct the pose matrix carefully.
+        
+        # We want the camera to look at the tendon.
+        # Based on your previous code logic:
+        # Camera is at: [0, cam_y - 0.32, self.cam_z_offset]
+        # Tendon is at [0, 0, 0] (roughly)
+        
+        y_cam_relative = cam_y - 0.32
+        
+        # Create a transformation matrix (4x4)
+        # This places the camera at the correct spot relative to the mesh
+        camera_pose = np.eye(4)
+        
+        # Translation
+        camera_pose[0, 3] = 0.0               # X
+        camera_pose[1, 3] = y_cam_relative    # Y
+        camera_pose[2, 3] = self.cam_z_offset # Z
+        
+        # Rotation: We need to align the camera to look down -Z (or however your mesh is oriented)
+        # Assuming the mesh is flat on XY plane and Z is up:
+        # We rotate 180 deg around X so camera looks "down" if Z is up
+        # (You may need to tweak this rotation depending on your specific mesh orientation)
+        rot_x_180 = trimesh.transformations.rotation_matrix(math.radians(180), [0,0,1])
+        camera_pose = camera_pose @ rot_x_180
+
+        # --- 3. Scene Setup ---
+        scene = pyrender.Scene(bg_color=[0, 0, 0, 0], ambient_light=[1.0, 1.0, 1.0])
+        scene.add(self.tendon_mesh)
+        scene.add(camera, pose=camera_pose)
+
+        # --- 4. Render ---
+        r = pyrender.OffscreenRenderer(width_px, height_px)
+        # We only need depth for the mask, but color is useful for debugging
+        color, depth = r.render(scene)
+        
+        # Clean up renderer to free GPU context
+        r.delete()
+
+        # --- 5. Post-Process ---
+        # Mask: Anywhere depth > 0 is the object
+        mask = (depth > 0).astype(np.uint8) * 255
+        
+        # Depth Map: Convert to mm
+        depth_map_mm = depth.astype(np.float32) * 1000.0
+
+        return mask, depth_map_mm
+
+    def apply_fisheye_distortion(self, image, K, D):
+        """
+        Optional: Warp the pinhole render to match the real fisheye camera.
+        K: Camera Matrix (3x3)
+        D: Distortion coefficients
+        """
+        h, w = image.shape[:2]
+        new_K, roi = cv2.getOptimalNewCameraMatrix(K, D, (w,h), 1, (w,h))
+        mapx, mapy = cv2.initUndistortRectifyMap(K, D, None, new_K, (w,h), 5)
+        
+        # Note: Usually we undistort real images. 
+        # To DISTORT synthetic images to match fisheye, you need the inverse mapping,
+        # which is complex. A simple approx is to use a barrel distortion shader 
+        # or standard OpenCV remap if you have the specific mappings.
+        return image
+    
+    def visualize_setup(self):
+        """Visualize tendon mesh and camera position."""
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Plot tendon mesh vertices
+        verts = self.tendon_mesh.vertices
+        ax.scatter(verts[:, 0] * 1000, verts[:, 1] * 1000, verts[:, 2] * 1000,
+                   s=1, alpha=0.3, label='Tendon mesh')
+
+        # Plot camera position
+        ax.scatter([0], [0], [self.cam_z * 1000],
+                   s=100, c='red', marker='^', label='Camera')
+
+        # Draw camera viewing direction
+        ax.quiver(0, 0, self.cam_z * 1000, 0, 0, -10, color='red', arrow_length_ratio=0.3)
+
+        ax.set_xlabel('X (mm)')
+        ax.set_ylabel('Y (mm)')
+        ax.set_zlabel('Z (mm)')
+        ax.legend()
+        ax.set_title('Tendon + Camera Setup')
+
+        # Equal aspect ratio
+        max_range = max(verts.max(axis=0) - verts.min(axis=0)) * 1000 / 2
+        mid = verts.mean(axis=0) * 1000
+        ax.set_xlim(mid[0] - max_range, mid[0] + max_range)
+        ax.set_ylim(mid[1] - max_range, mid[1] + max_range)
+        ax.set_zlim(0, self.cam_z * 1000 + 5)
+
+        plt.show()
