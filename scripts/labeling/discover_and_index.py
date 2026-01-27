@@ -47,8 +47,11 @@ def get_stl_config(phantom_type, motion_type):
         logger.warning(f"Phantom type {phantom_type} not in configs")
         return None
 
+    # Configs may be nested under "configs" key or flat at phantom level
+    configs = phantom_cfg.get("configs", phantom_cfg)
+
     # Try exact motion type match first, fallback to "default"
-    stl_cfg = phantom_cfg.get(motion_type) or phantom_cfg.get("default")
+    stl_cfg = configs.get(motion_type) or configs.get("default")
     if not stl_cfg:
         logger.warning(f"No STL config for {phantom_type}/{motion_type}")
         return None

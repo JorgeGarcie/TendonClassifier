@@ -36,8 +36,8 @@ TIME_COL = "time"
 FRAME_IDX_COL = "frame_number"
 IMAGE_PATH_COL = "image_path"
 
-# GT grid generation
-GT_GRID_DIR = "configs/gt_grids"
+# GT grid generation 
+GT_GRID_DIR = "output/gt_grids"
 GT_GRID_PARAMS = {
     "x_half": 0.0381,
     "y_half": 0.0635,
