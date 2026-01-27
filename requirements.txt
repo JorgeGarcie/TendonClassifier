@@ -1,0 +1,10 @@
+numpy
+pandas
+matplotlib
+opencv-python
+trimesh
+scipy
+torch
+torchvision
+torchmetrics
+segmentation-models-pytorch
