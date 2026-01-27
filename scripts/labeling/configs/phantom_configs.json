@@ -1,22 +1,86 @@
 {
   "p1": {
-    "default": {"stl_file": "p1.stl", "rotation_deg": 0},
-    "n2t": {"stl_file": "p1n2t.stl", "rotation_deg": 0},
-    "t2n": {"stl_file": "p1n2t.stl", "rotation_deg": 180},
-    "n2t2n": {"stl_file": "p1.stl", "rotation_deg": 0}
+    "configs": {
+      "default": {"stl_file": "p1.stl", "rotation_deg": 0, "pattern": "single"},
+      "n2t": {"stl_file": "p1n2t.stl", "rotation_deg": 0, "pattern": "single"},
+      "t2n": {"stl_file": "p1n2t.stl", "rotation_deg": 180, "pattern": "single"},
+      "n2t2n": {"stl_file": "p1.stl", "rotation_deg": 0, "pattern": "single"}
+    },
+    "gt_params": {
+      "t_stl_to_world": [
+        [0.999837, -0.018044, 0.0, 0.5116879957],
+        [0.018044,  0.999837, 0.0, 0.3225671259],
+        [0.0,       0.0,      1.0, 0.00375],
+        [0.0,       0.0,      0.0, 1.0]
+      ],
+      "z_surface": 0.014,
+      "tendon_bounds": {
+        "x": [-0.01, 0.01],
+        "y": [-0.075, 0.075],
+        "z": [0.001, 0.021]
+      }
+    }
   },
   "p2": {
-    "default": {"stl_file": "p2.stl", "rotation_deg": 0},
-    "d2s": {"stl_file": "p2.stl", "rotation_deg": 0},
-    "s2d": {"stl_file": "p2.stl", "rotation_deg": 180}
+    "configs": {
+      "default": {"stl_file": "p2.stl", "rotation_deg": 0, "pattern": "single"},
+      "d2s": {"stl_file": "p2.stl", "rotation_deg": 0, "pattern": "single"},
+      "s2d": {"stl_file": "p2.stl", "rotation_deg": 180, "pattern": "single"}
+    },
+    "gt_params": {
+      "t_stl_to_world": [
+        [0.999837, -0.018044, 0.0, 0.5116879957],
+        [0.018044,  0.999837, 0.0, 0.3225671259],
+        [0.0,       0.0,      1.0, 0.00375],
+        [0.0,       0.0,      0.0, 1.0]
+      ],
+      "z_surface": 0.014,
+      "tendon_bounds": {
+        "x": [-0.01, 0.01],
+        "y": [-0.075, 0.075],
+        "z": [0.001, 0.021]
+      }
+    }
   },
   "p3": {
-    "default": {"stl_file": "p3.stl", "rotation_deg": 0},
-    "thicker2thinner": {"stl_file": "p3.stl", "rotation_deg": 180},
-    "thinner2thicker": {"stl_file": "p3.stl", "rotation_deg": 0}
+    "configs": {
+      "default": {"stl_file": "P3.stl", "rotation_deg": 0, "pattern": "single"},
+      "thicker2thinner": {"stl_file": "P3.stl", "rotation_deg": 180, "pattern": "single"},
+      "thinner2thicker": {"stl_file": "P3.stl", "rotation_deg": 0, "pattern": "single"}
+    },
+    "gt_params": {
+      "t_stl_to_world": [
+        [0.999837, -0.018044, 0.0, 0.5116879957],
+        [0.018044,  0.999837, 0.0, 0.3225671259],
+        [0.0,       0.0,      1.0, 0.00375],
+        [0.0,       0.0,      0.0, 1.0]
+      ],
+      "z_surface": 0.014,
+      "tendon_bounds": {
+        "x": [-0.01, 0.01],
+        "y": [-0.075, 0.075],
+        "z": [0.001, 0.021]
+      }
+    }
   },
   "p4": {
-    "default": {"stl_file": "p4.stl", "rotation_deg": 0},
-    "m2s": {"stl_file": "p4.stl", "rotation_deg": 0}
+    "configs": {
+      "default": {"stl_file": "p4.stl", "rotation_deg": 0, "pattern": "crossed", "cross_y_threshold": 0},
+      "m2s": {"stl_file": "p4.stl", "rotation_deg": 0, "pattern": "crossed", "cross_y_threshold": 0}
+    },
+    "gt_params": {
+      "t_stl_to_world": [
+        [0.999837, -0.018044, 0.0, 0.5116879957],
+        [0.018044,  0.999837, 0.0, 0.3225671259],
+        [0.0,       0.0,      1.0, 0.00375],
+        [0.0,       0.0,      0.0, 1.0]
+      ],
+      "z_surface": 0.014,
+      "tendon_bounds": {
+        "x": [-0.01, 0.01],
+        "y": [-0.075, 0.075],
+        "z": [0.001, 0.021]
+      }
+    }
   }
 }
