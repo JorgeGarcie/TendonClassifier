@@ -35,3 +35,13 @@ WRENCH_DATA_COLS = ["time", "sensor", "fx", "fy", "fz", "tx", "ty", "tz"]  # adj
 TIME_COL = "time"
 FRAME_IDX_COL = "frame_number"
 IMAGE_PATH_COL = "image_path"
+
+# GT grid generation
+GT_GRID_DIR = "configs/gt_grids"
+GT_GRID_PARAMS = {
+    "x_half": 0.0381,
+    "y_half": 0.0635,
+    "dx": 0.0004,
+    "dy": 0.0004,
+    "ray_z0": 0.025,
+}
