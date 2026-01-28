@@ -13,7 +13,7 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset
 
 from dataset import TendonDataset
 from models import get_model
@@ -35,6 +35,32 @@ def parse_args():
     p.add_argument("--exclude-phantoms", nargs="*", default=None)
     p.add_argument("--img-size", type=int, default=224)
     return p.parse_args()
+
+
+def split_by_run(dataset, val_ratio=0.2, seed=42):
+    """Split dataset by run_id so all frames from a run stay in the same set.
+
+    Runs are randomly shuffled (seeded) to ensure each split sees a mix of
+    phantom types rather than grouping by name.
+    """
+    import random
+    df = dataset.df
+    run_ids = list(df["run_id"].unique())
+    random.Random(seed).shuffle(run_ids)
+
+    n_val = max(1, int(len(run_ids) * val_ratio))
+    n_train = len(run_ids) - n_val
+
+    train_runs = set(run_ids[:n_train])
+    val_runs = set(run_ids[n_train:])
+
+    train_idx = df.index[df["run_id"].isin(train_runs)].tolist()
+    val_idx = df.index[df["run_id"].isin(val_runs)].tolist()
+
+    print(f"Run-level split: {n_train} train runs ({len(train_idx)} frames), "
+          f"{n_val} val runs ({len(val_idx)} frames)")
+
+    return Subset(dataset, train_idx), Subset(dataset, val_idx)
 
 
 def forward_model(model, model_name, imgs, forces):
@@ -123,13 +149,7 @@ def main():
     )
     print(f"Dataset: {len(dataset)} samples")
 
-    val_size = int(len(dataset) * args.val_ratio)
-    train_size = len(dataset) - val_size
-    train_ds, val_ds = random_split(
-        dataset, [train_size, val_size],
-        generator=torch.Generator().manual_seed(42),
-    )
-    print(f"Train: {train_size}, Val: {val_size}")
+    train_ds, val_ds = split_by_run(dataset, val_ratio=args.val_ratio)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
