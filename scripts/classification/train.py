@@ -57,8 +57,9 @@ def split_by_run(dataset, val_ratio=0.2, seed=42):
     train_idx = df.index[df["run_id"].isin(train_runs)].tolist()
     val_idx = df.index[df["run_id"].isin(val_runs)].tolist()
 
-    print(f"Run-level split: {n_train} train runs ({len(train_idx)} frames), "
-          f"{n_val} val runs ({len(val_idx)} frames)")
+    print(f"Run-level split (seed={seed}):")
+    print(f"  Train ({n_train} runs, {len(train_idx)} frames): {sorted(train_runs)}")
+    print(f"  Val   ({n_val} runs, {len(val_idx)} frames): {sorted(val_runs)}")
 
     return Subset(dataset, train_idx), Subset(dataset, val_idx)
 

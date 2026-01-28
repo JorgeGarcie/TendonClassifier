@@ -9,6 +9,7 @@ Usage:
 import argparse
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -18,6 +19,7 @@ from models import get_model
 
 
 CLASS_NAMES = {0: "none", 1: "single", 2: "crossed", 3: "double"}
+NUM_CLASSES = len(CLASS_NAMES)
 
 
 def validate(args):
@@ -92,7 +94,7 @@ def validate(args):
 
     print(f"{'Class':<10} {'Prec':>8} {'Recall':>8} {'F1':>8} {'Support':>8}")
     print("-" * 46)
-    for c in range(len(CLASS_NAMES)):
+    for c in range(NUM_CLASSES):
         tp = ((preds == c) & (labels == c)).sum()
         fp = ((preds == c) & (labels != c)).sum()
         fn = ((preds != c) & (labels == c)).sum()
@@ -113,6 +115,88 @@ def validate(args):
         print(f"  Max:    {errs.max():.3f} mm")
 
     print()
+
+    # --- Graphical results ---
+    plot_results(preds, labels, depth_pred, depth_gt, args.model)
+
+
+def plot_results(preds, labels, depth_pred, depth_gt, model_name):
+    """Generate a 2x2 grid: confusion matrix, per-class metrics,
+    depth scatter, and depth error histogram."""
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    fig.suptitle(f"Validation Results — {model_name} model", fontsize=14)
+    class_labels = [CLASS_NAMES[i] for i in range(NUM_CLASSES)]
+
+    # --- (0,0) Confusion matrix ---
+    ax = axes[0, 0]
+    cm = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=int)
+    for gt, pr in zip(labels, preds):
+        cm[gt, pr] += 1
+    im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
+    fig.colorbar(im, ax=ax, fraction=0.046)
+    ax.set(xticks=range(NUM_CLASSES), yticks=range(NUM_CLASSES),
+           xticklabels=class_labels, yticklabels=class_labels,
+           xlabel="Predicted", ylabel="True", title="Confusion Matrix")
+    for i in range(NUM_CLASSES):
+        for j in range(NUM_CLASSES):
+            color = "white" if cm[i, j] > cm.max() / 2 else "black"
+            ax.text(j, i, str(cm[i, j]), ha="center", va="center", color=color)
+
+    # --- (0,1) Per-class precision / recall / F1 bar chart ---
+    ax = axes[0, 1]
+    precs, recs, f1s = [], [], []
+    for c in range(NUM_CLASSES):
+        tp = ((preds == c) & (labels == c)).sum()
+        fp = ((preds == c) & (labels != c)).sum()
+        fn = ((preds != c) & (labels == c)).sum()
+        p = tp / (tp + fp) if (tp + fp) > 0 else 0
+        r = tp / (tp + fn) if (tp + fn) > 0 else 0
+        f = 2 * p * r / (p + r) if (p + r) > 0 else 0
+        precs.append(p); recs.append(r); f1s.append(f)
+    x = np.arange(NUM_CLASSES)
+    w = 0.25
+    ax.bar(x - w, precs, w, label="Precision")
+    ax.bar(x, recs, w, label="Recall")
+    ax.bar(x + w, f1s, w, label="F1")
+    ax.set(xticks=x, xticklabels=class_labels, ylim=(0, 1.05),
+           ylabel="Score", title="Per-Class Metrics")
+    ax.legend(fontsize=8)
+
+    # --- (1,0) Depth scatter (predicted vs GT) ---
+    ax = axes[1, 0]
+    mask = labels > 0
+    if mask.sum() > 0:
+        ax.scatter(depth_gt[mask], depth_pred[mask], alpha=0.3, s=10,
+                   edgecolors="none")
+        lo = min(depth_gt[mask].min(), depth_pred[mask].min())
+        hi = max(depth_gt[mask].max(), depth_pred[mask].max())
+        ax.plot([lo, hi], [lo, hi], "r--", linewidth=1, label="ideal")
+        ax.set(xlabel="GT depth (mm)", ylabel="Predicted depth (mm)",
+               title="Depth: Predicted vs GT")
+        ax.legend(fontsize=8)
+    else:
+        ax.text(0.5, 0.5, "No tendon-present samples", transform=ax.transAxes,
+                ha="center")
+
+    # --- (1,1) Depth error histogram ---
+    ax = axes[1, 1]
+    if mask.sum() > 0:
+        errs = depth_pred[mask] - depth_gt[mask]
+        ax.hist(errs, bins=40, edgecolor="black", alpha=0.7)
+        ax.axvline(0, color="r", linestyle="--", linewidth=1)
+        ax.set(xlabel="Depth error (mm)  [pred - GT]", ylabel="Count",
+               title=f"Depth Error Distribution  (MAE={np.abs(errs).mean():.2f} mm)")
+    else:
+        ax.text(0.5, 0.5, "No tendon-present samples", transform=ax.transAxes,
+                ha="center")
+
+    plt.tight_layout()
+    out_dir = Path(__file__).parent / "checkpoints" / model_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "validation_results.png"
+    plt.savefig(out_path, dpi=150)
+    plt.show()
+    print(f"Saved: {out_path}")
 
 
 if __name__ == "__main__":
