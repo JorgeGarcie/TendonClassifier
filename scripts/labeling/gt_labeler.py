@@ -91,23 +91,33 @@ def load_phantom_gt_config(phantom, all_configs):
 # Type determination
 # ---------------------------------------------------------------------------
 
-def determine_tendon_type(yy_flat, hit_mask, pattern, cross_y_threshold=0.0):
+def determine_tendon_type(yy_flat, hit_mask, pattern, cross_y_threshold=0.0,
+                          flip_y=False):
     """Return type_id array: 0=none, 1=single, 2=crossed, 3=double.
 
-    For pattern "crossed" (p4): grid points with y <= threshold are crossed,
-    y > threshold are single.
-    For pattern "double" (p5): grid points with y <= threshold are double,
-    y > threshold are single.
+    For pattern "crossed" (p4): grid points on one side of the threshold are
+    crossed, the other side single.
+    For pattern "double" (p5): grid points on one side of the threshold are
+    double, the other side single.
+    flip_y inverts the comparison (used when the phantom is rotated 180°).
     For all other patterns every hit is single.
     """
     type_id = np.zeros(len(hit_mask), dtype=np.uint8)
 
     if pattern == "crossed":
-        type_id[hit_mask & (yy_flat <= cross_y_threshold)] = 2
-        type_id[hit_mask & (yy_flat > cross_y_threshold)] = 1
+        if flip_y:
+            type_id[hit_mask & (yy_flat >= cross_y_threshold)] = 2
+            type_id[hit_mask & (yy_flat < cross_y_threshold)] = 1
+        else:
+            type_id[hit_mask & (yy_flat <= cross_y_threshold)] = 2
+            type_id[hit_mask & (yy_flat > cross_y_threshold)] = 1
     elif pattern == "double":
-        type_id[hit_mask & (yy_flat <= cross_y_threshold)] = 3
-        type_id[hit_mask & (yy_flat > cross_y_threshold)] = 1
+        if flip_y:
+            type_id[hit_mask & (yy_flat >= cross_y_threshold)] = 3
+            type_id[hit_mask & (yy_flat < cross_y_threshold)] = 1
+        else:
+            type_id[hit_mask & (yy_flat <= cross_y_threshold)] = 3
+            type_id[hit_mask & (yy_flat > cross_y_threshold)] = 1
     else:
         type_id[hit_mask] = 1
 
@@ -170,8 +180,11 @@ def generate_gt_grid(phantom, config_name, stl_dir, output_dir, all_configs,
         hit_mask[hit_idx] = True
         depth_mm[hit_idx] = (z_surface - hits[:, 2]) * 1000.0  # positive = below surface
 
+    # 180° rotation flips the phantom, so invert the y-comparison
+    flip_y = (rotation_deg == 180)
+
     type_id = determine_tendon_type(
-        YY.ravel(), hit_mask, pattern, cross_y_threshold
+        YY.ravel(), hit_mask, pattern, cross_y_threshold, flip_y
     )
 
     # Save .npz
