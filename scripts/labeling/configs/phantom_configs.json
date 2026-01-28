@@ -82,5 +82,26 @@
         "z": [0.001, 0.021]
       }
     }
+  },
+  "p5": {
+    "configs": {
+      "default": {"stl_file": "p5.stl", "rotation_deg": 0, "pattern": "double", "cross_y_threshold": 0},
+      "m2s": {"stl_file": "p5.stl", "rotation_deg": 0, "pattern": "double", "cross_y_threshold": 0},
+      "s2m": {"stl_file": "p5.stl", "rotation_deg": 180, "pattern": "double", "cross_y_threshold": 0}
+    },
+    "gt_params": {
+      "t_stl_to_world": [
+        [0.999837, -0.018044, 0.0, 0.5116879957],
+        [0.018044,  0.999837, 0.0, 0.3225671259],
+        [0.0,       0.0,      1.0, 0.00375],
+        [0.0,       0.0,      0.0, 1.0]
+      ],
+      "z_surface": 0.014,
+      "tendon_bounds": {
+        "x": [-0.01, 0.01],
+        "y": [-0.075, 0.075],
+        "z": [0.001, 0.021]
+      }
+    }
   }
 }
