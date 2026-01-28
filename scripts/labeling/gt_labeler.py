@@ -92,15 +92,21 @@ def load_phantom_gt_config(phantom, all_configs):
 # ---------------------------------------------------------------------------
 
 def determine_tendon_type(yy_flat, hit_mask, pattern, cross_y_threshold=0.0):
-    """Return type_id array: 0=none, 1=single, 2=crossed.
+    """Return type_id array: 0=none, 1=single, 2=crossed, 3=double.
 
     For pattern "crossed" (p4): grid points with y <= threshold are crossed,
-    y > threshold are single.  For all other patterns every hit is single.
+    y > threshold are single.
+    For pattern "double" (p5): grid points with y <= threshold are double,
+    y > threshold are single.
+    For all other patterns every hit is single.
     """
     type_id = np.zeros(len(hit_mask), dtype=np.uint8)
 
     if pattern == "crossed":
         type_id[hit_mask & (yy_flat <= cross_y_threshold)] = 2
+        type_id[hit_mask & (yy_flat > cross_y_threshold)] = 1
+    elif pattern == "double":
+        type_id[hit_mask & (yy_flat <= cross_y_threshold)] = 3
         type_id[hit_mask & (yy_flat > cross_y_threshold)] = 1
     else:
         type_id[hit_mask] = 1
@@ -217,7 +223,7 @@ def _plot_gt_grid(XX, YY, hit_grid, depth_grid, type_grid, title):
                      vmin=0, vmax=2)
     ax2.set(title=f"Type ID — {title}",
             xlabel="x (mm)", ylabel="y (mm)")
-    plt.colorbar(im2, ax=ax2, label="type_id (0=none,1=single,2=crossed)")
+    plt.colorbar(im2, ax=ax2, label="type_id (0=none,1=single,2=crossed,3=double)")
 
     plt.tight_layout()
     plt.show()

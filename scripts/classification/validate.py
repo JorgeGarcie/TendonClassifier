@@ -17,7 +17,7 @@ from dataset import TendonDataset
 from models import get_model
 
 
-CLASS_NAMES = {0: "none", 1: "single", 2: "crossed"}
+CLASS_NAMES = {0: "none", 1: "single", 2: "crossed", 3: "double"}
 
 
 def validate(args):
@@ -92,7 +92,7 @@ def validate(args):
 
     print(f"{'Class':<10} {'Prec':>8} {'Recall':>8} {'F1':>8} {'Support':>8}")
     print("-" * 46)
-    for c in range(3):
+    for c in range(len(CLASS_NAMES)):
         tp = ((preds == c) & (labels == c)).sum()
         fp = ((preds == c) & (labels != c)).sum()
         fn = ((preds != c) & (labels == c)).sum()

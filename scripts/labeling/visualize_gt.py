@@ -25,8 +25,8 @@ def plot_grid(npz_path):
     ax1.set(title="Depth below surface (mm)", xlabel="x (mm)", ylabel="y (mm)")
     plt.colorbar(im1, ax=ax1, label="mm")
 
-    im2 = ax2.imshow(type_id, origin="lower", extent=extent, aspect="equal", vmin=0, vmax=2)
-    ax2.set(title="Type ID (1=single, 2=crossed)", xlabel="x (mm)", ylabel="y (mm)")
+    im2 = ax2.imshow(type_id, origin="lower", extent=extent, aspect="equal", vmin=0, vmax=3)
+    ax2.set(title="Type ID (1=single, 2=crossed, 3=double)", xlabel="x (mm)", ylabel="y (mm)")
     plt.colorbar(im2, ax=ax2)
 
     plt.tight_layout()

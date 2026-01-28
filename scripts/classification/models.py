@@ -6,7 +6,7 @@ import torchvision.models as models
 class ForceClassifier(nn.Module):
     """MLP for 6-axis force/torque: classification + depth regression."""
 
-    def __init__(self, input_dim=6, hidden_dims=[64, 32], num_classes=3):
+    def __init__(self, input_dim=6, hidden_dims=[64, 32], num_classes=4):
         super().__init__()
         layers = []
         prev_dim = input_dim
@@ -30,7 +30,7 @@ class ForceClassifier(nn.Module):
 class ImageClassifier(nn.Module):
     """ResNet18 image classifier + depth regression."""
 
-    def __init__(self, num_classes=3, pretrained=True, freeze_backbone=False):
+    def __init__(self, num_classes=4, pretrained=True, freeze_backbone=False):
         super().__init__()
         weights = "IMAGENET1K_V1" if pretrained else None
         backbone = models.resnet18(weights=weights)
@@ -54,7 +54,7 @@ class ImageClassifier(nn.Module):
 class CombinedClassifier(nn.Module):
     """Late-fusion image + force/torque: classification + depth regression."""
 
-    def __init__(self, sensor_dim=6, num_classes=3,
+    def __init__(self, sensor_dim=6, num_classes=4,
                  pretrained=True, freeze_backbone=False):
         super().__init__()
 
