@@ -1,10 +1,12 @@
 """Train tendon classifier + depth regressor (force-only, image-only, or combined).
 
 Usage:
-    python train.py --model force
-    python train.py --model image
+    # Single-label mode (mutually exclusive classes)
     python train.py --model combined
-    python train.py --model combined --depth-weight 0.1
+
+    # Multi-label mode (multiple patterns per image)
+    python train.py --model combined --multi-label
+    python train.py --model combined --multi-label --threshold 0.5
 """
 
 import argparse
@@ -15,7 +17,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 
-from dataset import TendonDataset
+from dataset import TendonDataset, NUM_PATTERNS, PATTERN_NAMES
 from models import get_model
 from train_utils import get_device, save_learning_curve
 
@@ -34,6 +36,11 @@ def parse_args():
     p.add_argument("--val-ratio", type=float, default=0.2)
     p.add_argument("--exclude-phantoms", nargs="*", default=None)
     p.add_argument("--img-size", type=int, default=224)
+    # Multi-label options
+    p.add_argument("--multi-label", action="store_true",
+                   help="Enable multi-label mode (detect multiple patterns per image)")
+    p.add_argument("--threshold", type=float, default=0.5,
+                   help="Prediction threshold for multi-label mode (default 0.5)")
     return p.parse_args()
 
 
@@ -73,12 +80,27 @@ def forward_model(model, model_name, imgs, forces):
         return model(imgs, forces)
 
 
-def compute_loss(cls_logits, depth_pred, labels, depth_gt, depth_weight):
-    """CE for classification + masked MSE for depth (only where presence==1)."""
-    cls_loss = F.cross_entropy(cls_logits, labels)
+def compute_loss(cls_logits, depth_pred, labels, depth_gt, depth_weight,
+                 multi_label=False):
+    """Compute classification + depth regression loss.
 
-    # Depth loss only on samples that have a tendon present
-    mask = labels > 0  # type 1 or 2 means tendon is present
+    For single-label: CE loss (mutually exclusive classes)
+    For multi-label: BCE loss (independent pattern predictions)
+
+    Depth loss is MSE only where tendon is present.
+    """
+    if multi_label:
+        # Multi-label: BCE with logits for independent pattern predictions
+        cls_loss = F.binary_cross_entropy_with_logits(cls_logits, labels)
+        # Depth loss on samples where any pattern (except "none") is present
+        # labels[:, 0] is "none", so presence means labels[:, 1:].sum(dim=1) > 0
+        mask = labels[:, 1:].sum(dim=1) > 0
+    else:
+        # Single-label: Cross-entropy for mutually exclusive classes
+        cls_loss = F.cross_entropy(cls_logits, labels)
+        # Depth loss on samples where tendon is present (label > 0)
+        mask = labels > 0
+
     if mask.sum() > 0:
         depth_loss = F.mse_loss(depth_pred[mask], depth_gt[mask])
     else:
@@ -88,7 +110,7 @@ def compute_loss(cls_logits, depth_pred, labels, depth_gt, depth_weight):
 
 
 def run_epoch(model, loader, optimizer, device, model_name, depth_weight,
-              train=True):
+              train=True, multi_label=False, threshold=0.5):
     model.train() if train else model.eval()
 
     total_loss = 0.0
@@ -98,6 +120,10 @@ def run_epoch(model, loader, optimizer, device, model_name, depth_weight,
     total = 0
     depth_abs_err = 0.0
     depth_count = 0
+
+    # Multi-label metrics
+    ml_correct_patterns = 0  # Total correct pattern predictions
+    ml_total_patterns = 0    # Total pattern predictions
 
     ctx = torch.no_grad() if not train else torch.enable_grad()
     with ctx:
@@ -110,7 +136,8 @@ def run_epoch(model, loader, optimizer, device, model_name, depth_weight,
             cls_logits, depth_pred = forward_model(model, model_name,
                                                    imgs, forces)
             loss, cls_loss, depth_loss = compute_loss(
-                cls_logits, depth_pred, labels, depth_gt, depth_weight
+                cls_logits, depth_pred, labels, depth_gt, depth_weight,
+                multi_label=multi_label
             )
 
             if train:
@@ -122,31 +149,61 @@ def run_epoch(model, loader, optimizer, device, model_name, depth_weight,
             total_loss += loss.item() * bs
             total_cls_loss += cls_loss.item() * bs
             total_depth_loss += depth_loss.item() * bs
-            preds = cls_logits.argmax(dim=1)
-            correct += (preds == labels).sum().item()
+
+            if multi_label:
+                # Multi-label: threshold-based predictions
+                preds = (torch.sigmoid(cls_logits) >= threshold).float()
+                # Exact match accuracy (all patterns correct for a sample)
+                correct += (preds == labels).all(dim=1).sum().item()
+                # Per-pattern accuracy
+                ml_correct_patterns += (preds == labels).sum().item()
+                ml_total_patterns += labels.numel()
+                # Depth mask: any pattern except "none" present
+                mask = labels[:, 1:].sum(dim=1) > 0
+            else:
+                # Single-label: argmax predictions
+                preds = cls_logits.argmax(dim=1)
+                correct += (preds == labels).sum().item()
+                mask = labels > 0
+
             total += bs
 
             # Depth MAE on present samples
-            mask = labels > 0
             if mask.sum() > 0:
                 depth_abs_err += (depth_pred[mask] - depth_gt[mask]).abs().sum().item()
                 depth_count += mask.sum().item()
 
     n = total
     depth_mae = depth_abs_err / depth_count if depth_count > 0 else 0.0
+    acc = correct / n
+
+    # For multi-label, also compute per-pattern accuracy
+    if multi_label and ml_total_patterns > 0:
+        pattern_acc = ml_correct_patterns / ml_total_patterns
+        # Return pattern_acc as the primary metric (more meaningful than exact match)
+        return (total_loss / n, total_cls_loss / n, total_depth_loss / n,
+                pattern_acc, depth_mae)
+
     return (total_loss / n, total_cls_loss / n, total_depth_loss / n,
-            correct / n, depth_mae)
+            acc, depth_mae)
 
 
 def main():
     args = parse_args()
     device = get_device()
 
+    mode_str = "multi-label" if args.multi_label else "single-label"
+    print(f"Training mode: {mode_str}")
+    if args.multi_label:
+        print(f"  Patterns: {PATTERN_NAMES}")
+        print(f"  Threshold: {args.threshold}")
+
     # Data
     dataset = TendonDataset(
         args.manifest,
         img_size=(args.img_size, args.img_size),
         exclude_phantom_types=args.exclude_phantoms,
+        multi_label=args.multi_label,
     )
     print(f"Dataset: {len(dataset)} samples")
 
@@ -156,20 +213,28 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
 
     # Model
-    model = get_model(args.model).to(device)
+    model = get_model(args.model, multi_label=args.multi_label,
+                      num_classes=NUM_PATTERNS).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    # Checkpoint setup
-    ckpt_dir = Path(__file__).parent / "checkpoints" / args.model
+    # Checkpoint setup - separate directory for multi-label models
+    model_dir = f"{args.model}_multilabel" if args.multi_label else args.model
+    ckpt_dir = Path(__file__).parent / "checkpoints" / model_dir
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
+    # Save config for reproducibility
+    config = vars(args).copy()
+    config["num_patterns"] = NUM_PATTERNS
+    config["pattern_names"] = PATTERN_NAMES
+
     csv_path = ckpt_dir / "training_log.csv"
+    acc_col = "pattern_acc" if args.multi_label else "acc"
     with open(csv_path, "w", newline="") as f:
         csv.writer(f).writerow([
             "epoch", "train_loss", "train_cls_loss", "train_depth_loss",
-            "train_acc", "train_depth_mae",
+            f"train_{acc_col}", "train_depth_mae",
             "val_loss", "val_cls_loss", "val_depth_loss",
-            "val_acc", "val_depth_mae",
+            f"val_{acc_col}", "val_depth_mae",
         ])
 
     # Resume if checkpoint exists
@@ -192,10 +257,12 @@ def main():
         t_loss, t_cls, t_dep, t_acc, t_dmae = run_epoch(
             model, train_loader, optimizer, device,
             args.model, args.depth_weight, train=True,
+            multi_label=args.multi_label, threshold=args.threshold,
         )
         v_loss, v_cls, v_dep, v_acc, v_dmae = run_epoch(
             model, val_loader, optimizer, device,
             args.model, args.depth_weight, train=False,
+            multi_label=args.multi_label, threshold=args.threshold,
         )
 
         history["train_loss"].append(t_loss)
@@ -207,7 +274,7 @@ def main():
 
         print(f"Epoch {epoch+1}/{args.epochs}  "
               f"loss={t_loss:.4f}/{v_loss:.4f}  "
-              f"acc={t_acc:.4f}/{v_acc:.4f}  "
+              f"{acc_col}={t_acc:.4f}/{v_acc:.4f}  "
               f"depth_mae={t_dmae:.3f}/{v_dmae:.3f} mm")
 
         with open(csv_path, "a", newline="") as f:
@@ -220,6 +287,9 @@ def main():
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
+            "multi_label": args.multi_label,
+            "threshold": args.threshold,
+            "num_patterns": NUM_PATTERNS,
         }
         torch.save(state, ckpt_dir / f"epoch_{epoch:03d}.pth")
 
@@ -227,19 +297,20 @@ def main():
             best_val_acc = v_acc
             torch.save(state, ckpt_dir / "best.pth")
 
+    curve_prefix = f"{args.model}_multilabel" if args.multi_label else args.model
     save_learning_curve(
         {"train_loss": history["train_loss"],
          "val_loss": history["val_loss"],
-         "train_acc": history["train_acc"],
-         "val_acc": history["val_acc"]},
-        filename=f"{args.model}_learning_curve.png",
+         f"train_{acc_col}": history["train_acc"],
+         f"val_{acc_col}": history["val_acc"]},
+        filename=f"{curve_prefix}_learning_curve.png",
     )
     save_learning_curve(
         {"train_depth_mae": history["train_depth_mae"],
          "val_depth_mae": history["val_depth_mae"]},
-        filename=f"{args.model}_depth_curve.png",
+        filename=f"{curve_prefix}_depth_curve.png",
     )
-    print(f"Done. Best val accuracy: {best_val_acc:.4f}")
+    print(f"Done. Best val {acc_col}: {best_val_acc:.4f}")
 
 
 if __name__ == "__main__":

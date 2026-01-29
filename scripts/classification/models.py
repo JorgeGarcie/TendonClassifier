@@ -3,11 +3,28 @@ import torch.nn as nn
 import torchvision.models as models
 
 
-class ForceClassifier(nn.Module):
-    """MLP for 6-axis force/torque: classification + depth regression."""
+# Pattern names for multi-label classification
+# Index 0 is "none" which is special - if none=1, all others should be 0
+PATTERN_NAMES = ["none", "single", "crossed", "double"]
 
-    def __init__(self, input_dim=6, hidden_dims=[64, 32], num_classes=4):
+
+class ForceClassifier(nn.Module):
+    """MLP for 6-axis force/torque: classification + depth regression.
+
+    Args:
+        input_dim: Number of force/torque channels (default 6)
+        hidden_dims: List of hidden layer dimensions
+        num_classes: Number of output classes/patterns
+        multi_label: If True, outputs independent logits for each pattern
+                     If False, outputs mutually exclusive class logits
+    """
+
+    def __init__(self, input_dim=6, hidden_dims=[64, 32], num_classes=4,
+                 multi_label=False):
         super().__init__()
+        self.multi_label = multi_label
+        self.num_classes = num_classes
+
         layers = []
         prev_dim = input_dim
         for h in hidden_dims:
@@ -28,10 +45,21 @@ class ForceClassifier(nn.Module):
 
 
 class ImageClassifier(nn.Module):
-    """ResNet18 image classifier + depth regression."""
+    """ResNet18 image classifier + depth regression.
 
-    def __init__(self, num_classes=4, pretrained=True, freeze_backbone=False):
+    Args:
+        num_classes: Number of output classes/patterns
+        pretrained: Use ImageNet pretrained weights
+        freeze_backbone: Freeze backbone weights
+        multi_label: If True, outputs independent logits for each pattern
+    """
+
+    def __init__(self, num_classes=4, pretrained=True, freeze_backbone=False,
+                 multi_label=False):
         super().__init__()
+        self.multi_label = multi_label
+        self.num_classes = num_classes
+
         weights = "IMAGENET1K_V1" if pretrained else None
         backbone = models.resnet18(weights=weights)
 
@@ -52,11 +80,21 @@ class ImageClassifier(nn.Module):
 
 
 class CombinedClassifier(nn.Module):
-    """Late-fusion image + force/torque: classification + depth regression."""
+    """Late-fusion image + force/torque: classification + depth regression.
+
+    Args:
+        sensor_dim: Number of sensor channels (default 6)
+        num_classes: Number of output classes/patterns
+        pretrained: Use ImageNet pretrained weights
+        freeze_backbone: Freeze backbone weights
+        multi_label: If True, outputs independent logits for each pattern
+    """
 
     def __init__(self, sensor_dim=6, num_classes=4,
-                 pretrained=True, freeze_backbone=False):
+                 pretrained=True, freeze_backbone=False, multi_label=False):
         super().__init__()
+        self.multi_label = multi_label
+        self.num_classes = num_classes
 
         # Image branch (ResNet18)
         weights = "IMAGENET1K_V1" if pretrained else None
@@ -98,13 +136,23 @@ class CombinedClassifier(nn.Module):
         return self.cls_head(fused), self.depth_head(fused).squeeze(-1)
 
 
-def get_model(name="combined", **kwargs):
-    """Factory function for model selection."""
+def get_model(name="combined", multi_label=False, num_classes=4, **kwargs):
+    """Factory function for model selection.
+
+    Args:
+        name: Model architecture ("force", "image", or "combined")
+        multi_label: If True, model outputs independent pattern predictions
+        num_classes: Number of output classes/patterns
+        **kwargs: Additional arguments passed to the model constructor
+    """
     if name == "force":
-        return ForceClassifier(**kwargs)
+        return ForceClassifier(num_classes=num_classes, multi_label=multi_label,
+                               **kwargs)
     elif name == "image":
-        return ImageClassifier(**kwargs)
+        return ImageClassifier(num_classes=num_classes, multi_label=multi_label,
+                               **kwargs)
     elif name == "combined":
-        return CombinedClassifier(**kwargs)
+        return CombinedClassifier(num_classes=num_classes, multi_label=multi_label,
+                                  **kwargs)
     else:
         raise ValueError(f"Unknown model: {name}")
