@@ -1,0 +1,57 @@
+# Temporal model - Force only (no images)
+# For ablation: test if temporal force patterns alone are sufficient
+
+experiment:
+  name: "temporal_force_only"
+  project: "TendonClassifier"
+  seed: 42
+
+model:
+  type: "temporal_force"  # Special type for force-only temporal
+  temporal:
+    num_frames: 5
+    aggregation: "attention"
+  fusion:
+    hidden_dim: 64  # Used as force_hidden_dim
+  num_classes: 4
+  use_force: true
+  use_depth_head: true
+
+data:
+  manifest: "../labeling/output/gt_dataset/gt_manifest.csv"
+  img_size: 224  # Not used but required by config schema
+  normalization:
+    type: "imagenet"
+  subtraction:
+    enabled: false
+  augmentation:
+    enabled: false
+
+training:
+  epochs: 100
+  batch_size: 32  # Can use larger batch since no images
+  lr: 0.0001
+  weight_decay: 0.0001
+  optimizer: "adamw"
+  scheduler:
+    type: "cosine"
+    warmup_epochs: 5
+  loss:
+    class_weights: "balanced"
+    depth_weight: 0.1
+  val_ratio: 0.2
+  split_by: "run"
+
+checkpoint:
+  dir: "checkpoints"
+  save_best: true
+  save_last: true
+  save_every_n_epochs: 5
+
+logging:
+  wandb:
+    enabled: true
+    tags: ["temporal", "force-only", "ablation"]
+  csv:
+    enabled: true
+  print_every: 1

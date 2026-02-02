@@ -1,0 +1,61 @@
+# Wandb Sweep Configuration for Spatial Models
+# Usage:
+#   wandb sweep configs/sweep_spatial.yaml
+#   wandb agent <sweep_id>
+
+program: train_sweep.py
+method: bayes  # bayes | grid | random
+metric:
+  name: val/acc
+  goal: maximize
+
+parameters:
+  # Model configuration
+  model_type:
+    values: ["spatial", "spatial_force"]
+
+  encoder_name:
+    values: ["resnet18", "dinov2_small"]
+
+  use_force:
+    values: [true, false]
+
+  fusion_type:
+    values: ["concat", "attention"]
+
+  fusion_hidden_dim:
+    values: [64, 128, 256]
+
+  # Training configuration
+  lr:
+    distribution: log_uniform_values
+    min: 0.00001
+    max: 0.01
+
+  batch_size:
+    values: [16, 32, 64]
+
+  optimizer:
+    values: ["adam", "adamw"]
+
+  weight_decay:
+    distribution: log_uniform_values
+    min: 0.00001
+    max: 0.01
+
+  # Loss configuration
+  depth_weight:
+    values: [0.0, 0.1, 0.5]
+
+  # Fixed parameters
+  epochs:
+    value: 50  # Shorter for HP search
+
+  seed:
+    value: 42
+
+# Early terminate poorly performing runs
+early_terminate:
+  type: hyperband
+  min_iter: 10
+  eta: 3

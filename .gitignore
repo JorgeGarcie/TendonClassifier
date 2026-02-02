@@ -1,4 +1,9 @@
 /.vscode
+__pycache__
+*.pyc
+__pycache__/
+
+# Ignore Outputs and Raw Data
 /data
 *.zip
 run_manifest.json
@@ -7,14 +12,14 @@ valid_frames.json
 *.npy
 *.jpg
 *.png
-__pycache__
 rawdata
 /old_data
 /output
-*.pyc
-__pycache__/
 description
 rawdata_backup
 resources
 output
 *.pth
+
+# Logs and Configs Wandb
+wandb

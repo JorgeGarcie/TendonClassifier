@@ -1,0 +1,79 @@
+# Default configuration for TendonClassifier v2
+# Override specific settings by creating a new config file that imports this one
+
+experiment:
+  name: "default_experiment"
+  project: "TendonClassifier"
+  seed: 42
+
+model:
+  type: "spatial"  # spatial | temporal | temporal_force
+  encoder:
+    name: "resnet18"  # resnet18 | dinov2_small | dinov2_base | clip_vit_b16
+    pretrained: true
+    freeze: true  # CRITICAL: freeze for small dataset (~4690 samples)
+  temporal:
+    num_frames: 5
+    aggregation: "attention"  # attention | mean | lstm
+  fusion:
+    type: "attention"  # concat | attention | cross_attention
+    hidden_dim: 128
+  num_classes: 4
+  use_force: true
+  use_depth_head: true
+
+data:
+  manifest: "../labeling/output/gt_dataset/gt_manifest.csv"
+  img_size: 224
+  normalization:
+    type: "imagenet"  # imagenet | simple (0-1 scaling)
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+  subtraction:
+    enabled: false
+    # Reference frame options:
+    # - "first_frame": Use first frame of each run (before contact begins)
+    # - "pre_contact": Use frame just before contact (requires 'contact_frame' column)
+    # - "/path/to/image.png": Use a global untouched reference image
+    reference: "first_frame"
+  augmentation:
+    enabled: false
+    horizontal_flip: true
+    rotation_degrees: 10
+    color_jitter:
+      brightness: 0.1
+      contrast: 0.1
+      saturation: 0.1
+  exclude_phantoms: null  # list of phantom types to exclude
+
+training:
+  epochs: 100
+  batch_size: 32
+  lr: 0.0001
+  weight_decay: 0.0001
+  optimizer: "adam"  # adam | adamw | sgd
+  scheduler:
+    type: "cosine"  # cosine | step | none
+    warmup_epochs: 5
+  loss:
+    class_weights: "balanced"  # balanced | none | list of weights
+    depth_weight: 0.1
+  val_ratio: 0.2
+  split_by: "run"  # run | random
+
+checkpoint:
+  dir: "checkpoints"
+  save_best: true
+  save_last: true
+  save_every_n_epochs: 5
+  resume: null  # path to checkpoint to resume from
+
+logging:
+  wandb:
+    enabled: true
+    entity: null  # wandb username or team
+    tags: []
+    notes: ""
+  csv:
+    enabled: true
+  print_every: 1  # print metrics every N epochs
