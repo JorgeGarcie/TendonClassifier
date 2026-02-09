@@ -105,13 +105,10 @@ def find_nearest_tcp(frame_time, tcp_times, tcp_data):
     return tcp_data.iloc[idx]
 
 
-def find_nearest_wrench(frame_time, wrench_times, wrench_data):
-    """Find nearest wrench reading for given frame timestamp."""
-    idx = np.searchsorted(wrench_times, frame_time)
-    idx = np.clip(idx, 0, len(wrench_times) - 1)
-    if idx > 0 and abs(wrench_times[idx - 1] - frame_time) < abs(wrench_times[idx] - frame_time):
-        idx = idx - 1
-    return wrench_data.iloc[idx]
+def interpolate_wrench(frame_time, wrench_times, wrench_arrays):
+    """Linearly interpolate wrench components at frame_time."""
+    return {col: float(np.interp(frame_time, wrench_times, arr))
+            for col, arr in wrench_arrays.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +172,11 @@ def process_run(run, run_metadata, phantom_cfgs, gt_grids,
     wrench_data = pd.read_csv(wrench_path)
 
     tcp_times = tcp_data[config.TIME_COL].values
-    wrench_times = wrench_data[config.TIME_COL].values
+
+    # Filter wrench to configured sensor and prepare interpolation arrays
+    wrench_sensor = wrench_data[wrench_data["sensor"] == config.WRENCH_SENSOR].sort_values(config.TIME_COL)
+    wrench_times = wrench_sensor[config.TIME_COL].values
+    wrench_arrays = {col: wrench_sensor[col].values for col in ["fx", "fy", "fz", "tx", "ty", "tz"]}
 
     # Output directories
     images_dir = Path(output_root) / "images"
@@ -202,14 +203,10 @@ def process_run(run, run_metadata, phantom_cfgs, gt_grids,
         tcp_y_val = float(tcp_row["y"])
         tcp_z = float(tcp_row["z"])
 
-        # Find nearest wrench (full 6-axis)
-        wrench_row = find_nearest_wrench(timestamp, wrench_times, wrench_data)
-        fx = float(wrench_row["fx"])
-        fy = float(wrench_row["fy"])
-        fz = float(wrench_row["fz"])
-        tx = float(wrench_row["tx"])
-        ty = float(wrench_row["ty"])
-        tz = float(wrench_row["tz"])
+        # Interpolate wrench at camera timestamp (resampling to camera rate)
+        w = interpolate_wrench(timestamp, wrench_times, wrench_arrays)
+        fx, fy, fz = w["fx"], w["fy"], w["fz"]
+        tx, ty, tz = w["tx"], w["ty"], w["tz"]
         force_magnitude = float(np.sqrt(fx**2 + fy**2 + fz**2))
 
         # Convert TCP world position to grid coordinates
