@@ -30,6 +30,7 @@ FRAME_SAMPLING = {
 CAMERA_FRAMES_COLS = ["time", "frame_number", "image_path"]
 TCP_POSE_COLS = ["time", "x", "y", "z", "qx", "qy", "qz", "qw"]
 WRENCH_DATA_COLS = ["time", "sensor", "fx", "fy", "fz", "tx", "ty", "tz"]  # adjust as needed
+WRENCH_SENSOR = "coinft"  # sensor used for force resampling
 
 # Column name mapping for compatibility
 TIME_COL = "time"
