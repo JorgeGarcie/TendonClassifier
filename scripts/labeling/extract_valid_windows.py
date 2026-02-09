@@ -98,9 +98,10 @@ def process_run(run_entry, manifest_dir):
 
     logger.info(f"Processing run: {run_id}")
 
-    # Load wrench data
+    # Load wrench data, filtered to configured sensor
     wrench_path = run_path / "wrench_data.csv"
-    wrench_data = pd.read_csv(wrench_path)
+    wrench_raw = pd.read_csv(wrench_path)
+    wrench_data = wrench_raw[wrench_raw["sensor"] == config.WRENCH_SENSOR].sort_values(config.TIME_COL)
 
     # Extract windows
     windows = extract_contact_windows(wrench_data, config.FORCE_THRESHOLD_N)
@@ -116,6 +117,12 @@ def process_run(run_entry, manifest_dir):
 
     frame_timestamps = camera_frames[config.TIME_COL].values
     tcp_timestamps = tcp_poses[config.TIME_COL].values
+
+    # Prepare interpolation arrays for wrench resampling
+    wrench_times = wrench_data[config.TIME_COL].values
+    wrench_fx = wrench_data["fx"].values
+    wrench_fy = wrench_data["fy"].values
+    wrench_fz = wrench_data["fz"].values
 
     # Collect frames from all windows
     selected_frames = []
@@ -133,21 +140,11 @@ def process_run(run_entry, manifest_dir):
         for idx in sampled_indices:
             frame_row = camera_frames.iloc[idx]
             tcp_row = find_nearest_tcp(frame_row[config.TIME_COL], tcp_timestamps, tcp_poses)
-            force_mag = compute_force_magnitude(
-                pd.DataFrame(
-                    {
-                        "fx": [wrench_data.loc[
-                            (wrench_data[config.TIME_COL] - frame_row[config.TIME_COL]).abs().idxmin(), "fx"
-                        ]],
-                        "fy": [wrench_data.loc[
-                            (wrench_data[config.TIME_COL] - frame_row[config.TIME_COL]).abs().idxmin(), "fy"
-                        ]],
-                        "fz": [wrench_data.loc[
-                            (wrench_data[config.TIME_COL] - frame_row[config.TIME_COL]).abs().idxmin(), "fz"
-                        ]],
-                    }
-                )
-            )[0]
+            t = frame_row[config.TIME_COL]
+            fx = np.interp(t, wrench_times, wrench_fx)
+            fy = np.interp(t, wrench_times, wrench_fy)
+            fz = np.interp(t, wrench_times, wrench_fz)
+            force_mag = float(np.sqrt(fx**2 + fy**2 + fz**2))
 
             selected_frames.append({
                 "frame_idx": int(frame_row[config.FRAME_IDX_COL]),
