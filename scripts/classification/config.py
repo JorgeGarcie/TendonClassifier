@@ -38,7 +38,7 @@ class FusionConfig:
 
 @dataclass
 class ModelConfig:
-    type: str = "spatial"  # spatial | temporal
+    type: str = "spatial"  # spatial | spatial_force | temporal | temporal_force
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     temporal: TemporalConfig = field(default_factory=TemporalConfig)
     fusion: FusionConfig = field(default_factory=FusionConfig)
@@ -57,7 +57,7 @@ class NormalizationConfig:
 @dataclass
 class SubtractionConfig:
     enabled: bool = False
-    reference: str = "first_frame"  # first_frame | untouched
+    reference: str = "first_frame"  # first_frame | pre_contact | /path/to/image.png
 
 
 @dataclass

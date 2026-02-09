@@ -234,6 +234,12 @@ class TendonDatasetV2(Dataset):
             for idx in sorted_group.index:
                 self.reference_index[idx] = first_idx
 
+    def _normalize_image(self, img: torch.Tensor) -> torch.Tensor:
+        """Apply normalization if configured."""
+        if self.norm_mean is None or self.norm_std is None:
+            return img
+        return (img - self.norm_mean) / self.norm_std
+
     def _load_reference_image(self, idx: int) -> torch.Tensor:
         """Load the reference image for subtraction.
 
@@ -251,19 +257,19 @@ class TendonDatasetV2(Dataset):
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             img = cv2.resize(img, self.img_size)
             img = torch.tensor(img, dtype=torch.float32).permute(2, 0, 1) / 255.0
-            if self.norm_mean is not None and self.norm_std is not None:
-                img = (img - self.norm_mean) / self.norm_std
+            # Return raw image; subtraction happens before normalization.
             return img
         else:
             # Load per-sample reference
             ref_idx = self.reference_index[idx]
-            return self._load_image(ref_idx)
+            return self._load_image(ref_idx, normalize=False)
 
-    def _load_image(self, idx: int) -> torch.Tensor:
+    def _load_image(self, idx: int, normalize: bool = True) -> torch.Tensor:
         """Load and preprocess a single image.
 
         Args:
             idx: DataFrame index
+            normalize: Whether to apply dataset normalization
 
         Returns:
             Image tensor of shape (3, H, W)
@@ -278,9 +284,9 @@ class TendonDatasetV2(Dataset):
         img = cv2.resize(img, self.img_size)
         img = torch.tensor(img, dtype=torch.float32).permute(2, 0, 1) / 255.0
 
-        # Apply normalization
-        if self.norm_mean is not None and self.norm_std is not None:
-            img = (img - self.norm_mean) / self.norm_std
+        # Apply normalization (if requested)
+        if normalize:
+            img = self._normalize_image(img)
 
         return img
 
@@ -328,7 +334,15 @@ class TendonDatasetV2(Dataset):
         if self.temporal_frames > 1:
             # Temporal mode: load sequence of frames
             frame_indices = self.temporal_index[idx]
-            images = torch.stack([self._load_image(i) for i in frame_indices])
+            images = torch.stack([self._load_image(i, normalize=False) for i in frame_indices])
+
+            # Apply subtraction if enabled (raw pixel space)
+            if self.subtraction_enabled:
+                ref_images = torch.stack([self._load_reference_image(i) for i in frame_indices])
+                images = images - ref_images
+
+            # Normalize after subtraction
+            images = self._normalize_image(images)
 
             # Create mask (all valid for now, padding handled in _build_temporal_index)
             mask = torch.ones(self.temporal_frames, dtype=torch.bool)
@@ -350,15 +364,18 @@ class TendonDatasetV2(Dataset):
                 )
         else:
             # Spatial mode: single image
-            images = self._load_image(idx)
+            images = self._load_image(idx, normalize=False)
 
-            # Apply subtraction if enabled
+            # Apply subtraction if enabled (raw pixel space)
             if self.subtraction_enabled:
                 ref_img = self._load_reference_image(idx)
                 images = images - ref_img
 
             # Apply augmentation
             images = self._apply_augmentation(images)
+
+            # Normalize after subtraction/augmentation
+            images = self._normalize_image(images)
 
             # Force / torque (single frame)
             force = torch.tensor(
