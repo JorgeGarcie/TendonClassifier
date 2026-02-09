@@ -15,7 +15,7 @@ model:
     hidden_dim: 64  # Used as force_hidden_dim
   num_classes: 4
   use_force: true
-  use_depth_head: true
+  use_depth_head: false  # Focus on classification only
 
 data:
   manifest: "../labeling/output/gt_dataset/gt_manifest.csv"

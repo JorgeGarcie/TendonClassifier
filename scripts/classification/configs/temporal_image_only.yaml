@@ -9,7 +9,7 @@ experiment:
 model:
   type: "temporal"
   encoder:
-    name: "dinov2_small"
+    name: "resnet18"
     pretrained: true
     freeze: true
   temporal:
@@ -20,7 +20,7 @@ model:
     hidden_dim: 128
   num_classes: 4
   use_force: false  # Image only
-  use_depth_head: true
+  use_depth_head: false  # Focus on classification only
 
 data:
   manifest: "../labeling/output/gt_dataset/gt_manifest.csv"
