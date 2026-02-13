@@ -4,7 +4,8 @@
       "default": {"stl_file": "p1.stl", "rotation_deg": 0, "pattern": "single"},
       "n2t": {"stl_file": "p1n2t.stl", "rotation_deg": 0, "pattern": "single"},
       "t2n": {"stl_file": "p1n2t.stl", "rotation_deg": 180, "pattern": "single"},
-      "n2t2n": {"stl_file": "p1.stl", "rotation_deg": 0, "pattern": "single"}
+      "n2t2n": {"stl_file": "p1.stl", "rotation_deg": 0, "pattern": "single"},
+      "t": {"stl_file": "p1.stl", "rotation_deg": 0, "pattern": "single"}
     },
     "gt_params": {
       "t_stl_to_world": [
@@ -66,7 +67,8 @@
   "p4": {
     "configs": {
       "default": {"stl_file": "p4.stl", "rotation_deg": 0, "pattern": "crossed", "cross_y_threshold": 0},
-      "m2s": {"stl_file": "p4.stl", "rotation_deg": 0, "pattern": "crossed", "cross_y_threshold": 0}
+      "m2s": {"stl_file": "p4.stl", "rotation_deg": 0, "pattern": "crossed", "cross_y_threshold": 0},
+      "s2d": {"stl_file": "p4.stl", "rotation_deg": 180, "pattern": "crossed", "cross_y_threshold": 0}
     },
     "gt_params": {
       "t_stl_to_world": [
