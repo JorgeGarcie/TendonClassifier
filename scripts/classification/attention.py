@@ -181,6 +181,25 @@ class TemporalAttentionAggregator(nn.Module):
         # Final projection
         self.out_proj = nn.Linear(feature_dim, feature_dim)
 
+    def _build_causal_mask(self, T: int, device: torch.device) -> torch.Tensor:
+        """Build causal attention mask with aggregation token.
+
+        The agg token (position 0) can attend to all frames.
+        Each frame can only attend to itself and earlier frames (causal).
+
+        Returns:
+            Float mask of shape (T+1, T+1) where -inf = blocked.
+        """
+        size = T + 1  # +1 for agg token
+        # Start with all blocked
+        mask = torch.full((size, size), float("-inf"), device=device)
+        # Agg token (row 0) attends to everything
+        mask[0, :] = 0.0
+        # Frame tokens: causal (lower triangular for positions 1..T)
+        for i in range(1, size):
+            mask[i, 1:i+1] = 0.0
+        return mask
+
     def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         """Forward pass.
 
@@ -200,7 +219,10 @@ class TemporalAttentionAggregator(nn.Module):
         agg_tokens = self.agg_token.expand(B, -1, -1)  # (B, 1, D)
         x = torch.cat([agg_tokens, x], dim=1)  # (B, T+1, D)
 
-        # Update mask if provided
+        # Build causal attention mask
+        causal_mask = self._build_causal_mask(T, x.device)
+
+        # Update padding mask if provided
         if mask is not None:
             # Add True for agg token
             agg_mask = torch.ones(B, 1, device=mask.device, dtype=mask.dtype)
@@ -208,8 +230,8 @@ class TemporalAttentionAggregator(nn.Module):
             # Convert to attention mask format (True = ignore)
             mask = ~mask.bool()
 
-        # Apply transformer
-        x = self.transformer(x, src_key_padding_mask=mask)
+        # Apply transformer with causal mask
+        x = self.transformer(x, mask=causal_mask, src_key_padding_mask=mask)
 
         # Extract aggregation token output
         agg_out = x[:, 0, :]  # (B, D)
