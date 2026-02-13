@@ -1,0 +1,36 @@
+# Git
+.git
+.gitignore
+
+# Data and model artifacts
+data/
+old_data/
+rawdata/
+rawdata_backup/
+checkpoints/
+output/
+resources/
+learning_curves/
+
+# Wandb logs
+wandb/
+**/wandb/
+
+# IDE
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Large/binary files
+*.pth
+*.pth.tar
+*.npy
+*.zip
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose*.yml
