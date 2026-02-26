@@ -268,6 +268,64 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
+class TokenSelfAttentionFusion(nn.Module):
+    """Per-frame token self-attention fusion.
+
+    Creates [force_token, image_token] with learned modality embeddings,
+    runs self-attention, returns the fused force token.
+    Works for both spatial (B, D) and temporal (B, T, D) inputs.
+    """
+
+    def __init__(self, image_dim: int, force_dim: int, hidden_dim: int = 128,
+                 num_heads: int = 4, num_layers: int = 1, dropout: float = 0.1):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+
+        self.image_proj = nn.Linear(image_dim, hidden_dim)
+        self.force_proj = nn.Linear(force_dim, hidden_dim)
+        self.modality_embed = nn.Embedding(2, hidden_dim)  # 0=force, 1=image
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=num_heads,
+            dim_feedforward=hidden_dim * 4,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+    def forward(self, image_feat: torch.Tensor,
+                force_feat: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            image_feat: Image features of shape (B, D_img) or (B, T, D_img)
+            force_feat: Force features of shape (B, D_force) or (B, T, D_force)
+
+        Returns:
+            Fused features of shape (B, hidden_dim) or (B, T, hidden_dim)
+        """
+        # Modality indices
+        force_idx = torch.zeros(1, dtype=torch.long, device=image_feat.device)
+        image_idx = torch.ones(1, dtype=torch.long, device=image_feat.device)
+
+        # Project + add modality embeddings
+        img = self.image_proj(image_feat) + self.modality_embed(image_idx)
+        frc = self.force_proj(force_feat) + self.modality_embed(force_idx)
+
+        # Handle spatial (B, D) vs temporal (B, T, D)
+        if img.dim() == 2:
+            tokens = torch.stack([frc, img], dim=1)  # (B, 2, H)
+            out = self.transformer(tokens)
+            return out[:, 0, :]  # (B, H) — force token
+        else:
+            B, T, H = img.shape
+            tokens = torch.stack([frc, img], dim=2).view(B * T, 2, H)
+            out = self.transformer(tokens)  # (B*T, 2, H)
+            return out[:, 0, :].view(B, T, H)  # (B, T, H) — force token
+
+
 class SimpleFusion(nn.Module):
     """Simple concatenation-based fusion with MLP."""
 
@@ -371,14 +429,18 @@ class LSTMAggregator(nn.Module):
 
 
 def get_fusion_module(fusion_type: str, image_dim: int, force_dim: int,
-                      hidden_dim: int = 128) -> nn.Module:
+                      hidden_dim: int = 128, num_heads: int = 4,
+                      num_layers: int = 1, dropout: float = 0.1) -> nn.Module:
     """Factory for fusion modules.
 
     Args:
-        fusion_type: One of "concat", "attention", "cross_attention"
+        fusion_type: One of "concat", "attention", "cross_attention", "token_self_attention"
         image_dim: Image feature dimension
         force_dim: Force feature dimension
         hidden_dim: Hidden dimension for fusion
+        num_heads: Number of attention heads (token_self_attention)
+        num_layers: Number of transformer layers (token_self_attention)
+        dropout: Dropout rate (token_self_attention)
 
     Returns:
         Fusion module
@@ -387,6 +449,11 @@ def get_fusion_module(fusion_type: str, image_dim: int, force_dim: int,
         return SimpleFusion(image_dim, force_dim, hidden_dim)
     elif fusion_type in ("attention", "cross_attention"):
         return CrossModalAttention(image_dim, force_dim, hidden_dim)
+    elif fusion_type == "token_self_attention":
+        return TokenSelfAttentionFusion(
+            image_dim, force_dim, hidden_dim,
+            num_heads=num_heads, num_layers=num_layers, dropout=dropout,
+        )
     else:
         raise ValueError(f"Unknown fusion type: {fusion_type}")
 

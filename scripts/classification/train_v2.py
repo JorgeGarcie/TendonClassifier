@@ -193,6 +193,79 @@ def split_by_run_stratified(dataset, val_ratio=0.2, seed=42, val_n_override=None
     return Subset(dataset, train_idx), Subset(dataset, val_idx)
 
 
+def split_frame_contiguous(dataset, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1,
+                           seed=42, purge_frames=0):
+    """Contiguous per-run frame split with purge gaps at boundaries.
+
+    Within each run (sorted by frame_idx):
+      [train 80%] [purge T-1] [val 10%] [purge T-1] [test 10%]
+
+    Purge gaps ensure that val/test temporal windows don't overlap with train frames.
+
+    Args:
+        dataset: TendonDatasetV2 instance
+        train_ratio: Fraction of frames for training
+        val_ratio: Fraction of frames for validation
+        test_ratio: Fraction of frames for test (0 = no test set)
+        seed: Random seed (unused — split is deterministic given frame order)
+        purge_frames: Number of frames to discard at each boundary
+
+    Returns:
+        (train_ds, val_ds, test_ds) — test_ds is None if test_ratio == 0
+    """
+    df = dataset.df
+    train_idx, val_idx, test_idx = [], [], []
+
+    label_names = {0: "none", 1: "single", 2: "crossed", 3: "double"}
+    print(f"Contiguous frame split (train={train_ratio}, val={val_ratio}, "
+          f"test={test_ratio}, purge={purge_frames}):")
+
+    for run_id, group in sorted(df.groupby("run_id"), key=lambda x: x[0]):
+        sorted_group = group.sort_values("frame_idx")
+        indices = sorted_group.index.tolist()
+        n = len(indices)
+
+        n_train = int(n * train_ratio)
+        n_val = int(n * val_ratio)
+
+        train_end = n_train
+        val_start = train_end + purge_frames
+        val_end = val_start + n_val
+        test_start = val_end + purge_frames
+
+        run_train = indices[:train_end]
+        run_val = indices[val_start:val_end] if val_start < n else []
+        run_test = indices[test_start:] if test_ratio > 0 and test_start < n else []
+
+        n_purged = (val_start - train_end) + (test_start - val_end) if test_ratio > 0 else (val_start - train_end)
+        n_purged = min(n_purged, n - len(run_train) - len(run_val) - len(run_test))
+
+        train_idx.extend(run_train)
+        val_idx.extend(run_val)
+        test_idx.extend(run_test)
+
+        print(f"  {run_id}: {n} total → {len(run_train)} train, "
+              f"{len(run_val)} val, {len(run_test)} test, {n_purged} purged")
+
+    print(f"  Total: {len(train_idx)} train, {len(val_idx)} val, "
+          f"{len(test_idx)} test")
+
+    # Print class distribution per split
+    for split_name, idx_list in [("Train", train_idx), ("Val", val_idx), ("Test", test_idx)]:
+        if not idx_list:
+            continue
+        split_df = df.iloc[idx_list]
+        counts = split_df["tendon_type"].value_counts().sort_index()
+        print(f"  {split_name} class distribution:")
+        for cls, cnt in counts.items():
+            print(f"    class {cls} ({label_names.get(cls, cls)}): {cnt} ({cnt/len(split_df)*100:.1f}%)")
+
+    train_ds = Subset(dataset, train_idx)
+    val_ds = Subset(dataset, val_idx)
+    test_ds = Subset(dataset, test_idx) if test_idx else None
+    return train_ds, val_ds, test_ds
+
+
 def get_balanced_sampler(subset):
     """WeightedRandomSampler that gives each class equal expected frequency.
 
@@ -499,13 +572,16 @@ def main():
     # Determine if we need temporal mode
     is_temporal = config.model.type in ("temporal", "temporal_force")
     temporal_frames = config.model.temporal.num_frames if is_temporal else 1
-    return_force_sequence = config.model.type == "temporal_force"
+    return_force_sequence = config.model.type == "temporal_force" or (
+        config.model.type == "temporal" and config.model.use_force
+    )
 
     dataset = TendonDatasetV2(
         manifest_csv=config.data.manifest,
         img_size=(config.data.img_size, config.data.img_size),
         exclude_phantom_types=config.data.exclude_phantoms,
         exclude_run_regex=config.data.exclude_run_regex,
+        include_run_regex=config.data.include_run_regex,
         normalization=config.data.normalization.type,
         norm_mean=config.data.normalization.mean,
         norm_std=config.data.normalization.std,
@@ -528,16 +604,35 @@ def main():
     print(f"Dataset: {len(dataset)} samples")
     print(f"Class distribution: {dataset.get_class_distribution()}")
 
-    # Split (stratified by phantom type so all classes appear in val).
-    # Config-driven: see training.split in YAML for val_n_override,
-    # train_n_override, and frame_split_phantoms.
+    # Split dataset into train / val (/ test).
     split_cfg = config.training.split
-    train_ds, val_ds = split_by_run_stratified(
-        dataset, val_ratio=config.training.val_ratio, seed=config.experiment.seed,
-        val_n_override=split_cfg.val_n_override,
-        train_n_override=split_cfg.train_n_override,
-        frame_split_phantoms=split_cfg.frame_split_phantoms,
-    )
+    test_ds = None
+
+    if config.training.split_by == "frame":
+        # Contiguous per-run frame split with temporal purge gaps
+        test_ratio = split_cfg.test_ratio
+        val_ratio = config.training.val_ratio
+        train_ratio = 1.0 - val_ratio - test_ratio
+        purge_frames = (temporal_frames - 1) if temporal_frames > 1 else 0
+        train_ds, val_ds, test_ds = split_frame_contiguous(
+            dataset,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            test_ratio=test_ratio,
+            seed=config.experiment.seed,
+            purge_frames=purge_frames,
+        )
+    else:
+        # Stratified run-level split (default)
+        train_ds, val_ds = split_by_run_stratified(
+            dataset, val_ratio=config.training.val_ratio, seed=config.experiment.seed,
+            val_n_override=split_cfg.val_n_override,
+            train_n_override=split_cfg.train_n_override,
+            frame_split_phantoms=split_cfg.frame_split_phantoms,
+        )
+
+    # Compute force normalization stats from training split only
+    dataset.compute_force_stats(train_ds.indices)
 
     # Balanced sampler: oversample minority classes so each class is seen equally
     use_balanced = getattr(config.training, "balanced_sampling", True)
@@ -768,6 +863,41 @@ def main():
         final_metrics[f"final/{class_name}/recall"] = report_dict[class_name]["recall"]
         final_metrics[f"final/{class_name}/f1"] = report_dict[class_name]["f1-score"]
     logger.log(final_metrics)
+
+    # Test set evaluation (if available)
+    if test_ds is not None:
+        print("\n--- Test Set Evaluation (Best Model) ---")
+        test_loader = DataLoader(
+            test_ds, batch_size=config.training.batch_size, shuffle=False, num_workers=4
+        )
+        test_pred, test_true = collect_predictions(model, test_loader, device, config)
+
+        test_cm = confusion_matrix(test_true, test_pred)
+        print("\nTest Confusion Matrix:")
+        print(f"{'':>12} " + " ".join(f"{name:>10}" for name in class_names))
+        for i, row_vals in enumerate(test_cm):
+            print(f"{class_names[i]:>12} " + " ".join(f"{val:>10}" for val in row_vals))
+
+        test_report = classification_report(
+            test_true, test_pred, target_names=class_names, digits=4
+        )
+        print(f"\nTest Classification Report:\n{test_report}")
+
+        test_report_dict = classification_report(
+            test_true, test_pred, target_names=class_names, output_dict=True
+        )
+        test_metrics = {
+            "test/accuracy": test_report_dict["accuracy"],
+            "test/macro_f1": test_report_dict["macro avg"]["f1-score"],
+            "test/macro_precision": test_report_dict["macro avg"]["precision"],
+            "test/macro_recall": test_report_dict["macro avg"]["recall"],
+        }
+        for class_name in class_names:
+            test_metrics[f"test/{class_name}/precision"] = test_report_dict[class_name]["precision"]
+            test_metrics[f"test/{class_name}/recall"] = test_report_dict[class_name]["recall"]
+            test_metrics[f"test/{class_name}/f1"] = test_report_dict[class_name]["f1-score"]
+        logger.log(test_metrics)
+        logger.log_confusion_matrix(test_true, test_pred, class_names, title="Test Confusion Matrix")
 
     # Finish wandb
     logger.finish()

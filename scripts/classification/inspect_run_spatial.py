@@ -241,7 +241,9 @@ def main():
 
     is_temporal = config.model.type in ("temporal", "temporal_force")
     temporal_frames = config.model.temporal.num_frames if is_temporal else 1
-    return_force_seq = config.model.type == "temporal_force"
+    return_force_seq = config.model.type == "temporal_force" or (
+        config.model.type == "temporal" and config.model.use_force
+    )
 
     dataset = TendonDatasetV2(
         manifest_csv=config.data.manifest,

@@ -32,8 +32,11 @@ class TemporalConfig:
 
 @dataclass
 class FusionConfig:
-    type: str = "attention"  # concat | attention | cross_attention
+    type: str = "attention"  # concat | attention | cross_attention | token_self_attention
     hidden_dim: int = 128
+    num_heads: int = 4
+    num_layers: int = 1
+    dropout: float = 0.1
 
 
 @dataclass
@@ -84,6 +87,7 @@ class DataConfig:
     augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
     exclude_phantoms: Optional[list] = None
     exclude_run_regex: Optional[str] = None  # Regex pattern to exclude run_ids (e.g. "_nat-" for nat arc runs)
+    include_run_regex: Optional[str] = None  # Regex pattern to include only matching run_ids
 
 
 @dataclass
@@ -104,6 +108,7 @@ class SplitConfig:
     val_n_override: Optional[Dict[str, int]] = None   # phantom -> n_val runs
     train_n_override: Optional[Dict[str, int]] = None  # phantom -> max n_train runs (excess excluded)
     frame_split_phantoms: Optional[List[str]] = None   # phantoms split 50/50 by frame (not by run)
+    test_ratio: float = 0.0  # fraction held out for test (frame split mode only)
 
 
 @dataclass
@@ -259,6 +264,7 @@ def _build_data_config(data: dict) -> DataConfig:
         augmentation=augmentation,
         exclude_phantoms=data.get("exclude_phantoms"),
         exclude_run_regex=data.get("exclude_run_regex"),
+        include_run_regex=data.get("include_run_regex"),
     )
 
 
@@ -272,6 +278,7 @@ def _build_training_config(data: dict) -> TrainingConfig:
         val_n_override=split_data.get("val_n_override"),
         train_n_override=split_data.get("train_n_override"),
         frame_split_phantoms=split_data.get("frame_split_phantoms"),
+        test_ratio=split_data.get("test_ratio", 0.0),
     )
 
     return TrainingConfig(

@@ -253,6 +253,9 @@ class TemporalModel(nn.Module):
 
     Processes a sequence of frames and aggregates them using
     attention, mean pooling, or LSTM.
+
+    When use_force=True, fusion happens per-frame BEFORE temporal
+    aggregation so that force context informs every frame's representation.
     """
 
     def __init__(
@@ -267,6 +270,9 @@ class TemporalModel(nn.Module):
         fusion_hidden_dim: int = 128,
         use_depth_head: bool = True,
         pretrained: bool = True,
+        fusion_num_heads: int = 4,
+        fusion_num_layers: int = 1,
+        fusion_dropout: float = 0.1,
     ):
         super().__init__()
         self.num_frames = num_frames
@@ -278,20 +284,29 @@ class TemporalModel(nn.Module):
                                    freeze=freeze_encoder)
         encoder_dim = self.encoder.output_dim
 
-        # Temporal aggregator
-        self.temporal_agg = get_temporal_aggregator(aggregation, encoder_dim)
-
-        # Force branch (if used)
+        # Force branch (if used) — per-frame temporal force
         if use_force:
-            self.force_branch = ForceBranch(input_dim=6, output_dim=64)
+            self.force_branch = TemporalForceBranch(
+                input_dim=6, hidden_dim=64, output_dim=64,
+            )
             force_dim = self.force_branch.output_dim
 
-            # Fusion module
+            # Per-frame fusion module (operates on (B, T, D) tensors)
             self.fusion = get_fusion_module(
-                fusion_type, encoder_dim, force_dim, fusion_hidden_dim
+                fusion_type, encoder_dim, force_dim, fusion_hidden_dim,
+                num_heads=fusion_num_heads, num_layers=fusion_num_layers,
+                dropout=fusion_dropout,
+            )
+            # Temporal aggregator operates on fused dim
+            self.temporal_agg = get_temporal_aggregator(aggregation, fusion_hidden_dim)
+            self.proj = nn.Sequential(
+                nn.Linear(fusion_hidden_dim, fusion_hidden_dim),
+                nn.ReLU(),
             )
             head_input_dim = fusion_hidden_dim
         else:
+            # Temporal aggregator operates on encoder dim
+            self.temporal_agg = get_temporal_aggregator(aggregation, encoder_dim)
             self.proj = nn.Sequential(
                 nn.Linear(encoder_dim, fusion_hidden_dim),
                 nn.ReLU(),
@@ -309,7 +324,7 @@ class TemporalModel(nn.Module):
 
         Args:
             images: Image sequence tensor of shape (B, T, 3, H, W)
-            force: Optional force tensor of shape (B, 6) - current frame force
+            force: Optional force tensor of shape (B, T, 6) - per-frame force sequence
             mask: Optional mask of shape (B, T) indicating valid frames
 
         Returns:
@@ -320,19 +335,19 @@ class TemporalModel(nn.Module):
         # Encode all frames
         images_flat = images.view(B * T, C, H, W)
         features_flat = self.encoder(images_flat)
-        features = features_flat.view(B, T, -1)  # (B, T, D)
-
-        # Temporal aggregation
-        agg_feat = self.temporal_agg(features, mask)  # (B, D)
+        features = features_flat.view(B, T, -1)  # (B, T, D_enc)
 
         if self.use_force and force is not None:
-            # Extract force features and fuse
-            force_feat = self.force_branch(force)
-            fused = self.fusion(agg_feat, force_feat)
+            # Per-frame fusion: fuse image + force at each timestep
+            force_features = self.force_branch(force)  # (B, T, D_force)
+            fused = self.fusion(features, force_features)  # (B, T, fusion_hidden_dim)
+            agg_feat = self.temporal_agg(fused, mask)  # (B, fusion_hidden_dim)
+            out = self.proj(agg_feat)
         else:
-            fused = self.proj(agg_feat)
+            agg_feat = self.temporal_agg(features, mask)  # (B, D_enc)
+            out = self.proj(agg_feat)
 
-        return self.head(fused)
+        return self.head(out)
 
 
 class TemporalForceModel(nn.Module):
@@ -405,6 +420,9 @@ def get_model_v2(config) -> nn.Module:
         use_depth_head = config.use_depth_head
         fusion_type = config.fusion.type
         fusion_hidden_dim = config.fusion.hidden_dim
+        fusion_num_heads = getattr(config.fusion, "num_heads", 4)
+        fusion_num_layers = getattr(config.fusion, "num_layers", 1)
+        fusion_dropout = getattr(config.fusion, "dropout", 0.1)
         num_frames = config.temporal.num_frames
         aggregation = config.temporal.aggregation
     else:
@@ -419,6 +437,9 @@ def get_model_v2(config) -> nn.Module:
         fusion_cfg = config.get("fusion", {})
         fusion_type = fusion_cfg.get("type", "attention")
         fusion_hidden_dim = fusion_cfg.get("hidden_dim", 128)
+        fusion_num_heads = fusion_cfg.get("num_heads", 4)
+        fusion_num_layers = fusion_cfg.get("num_layers", 1)
+        fusion_dropout = fusion_cfg.get("dropout", 0.1)
         temporal_cfg = config.get("temporal", {})
         num_frames = temporal_cfg.get("num_frames", 5)
         aggregation = temporal_cfg.get("aggregation", "attention")
@@ -457,6 +478,9 @@ def get_model_v2(config) -> nn.Module:
             fusion_hidden_dim=fusion_hidden_dim,
             use_depth_head=use_depth_head,
             pretrained=pretrained,
+            fusion_num_heads=fusion_num_heads,
+            fusion_num_layers=fusion_num_layers,
+            fusion_dropout=fusion_dropout,
         )
     elif model_type == "temporal_force":
         return TemporalForceModel(

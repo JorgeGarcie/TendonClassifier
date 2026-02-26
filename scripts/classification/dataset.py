@@ -95,6 +95,7 @@ class TendonDatasetV2(Dataset):
         dataset_root: Optional[str] = None,
         exclude_phantom_types: Optional[List[str]] = None,
         exclude_run_regex: Optional[str] = None,
+        include_run_regex: Optional[str] = None,
         normalization: str = "imagenet",  # "imagenet" or "simple"
         norm_mean: Optional[List[float]] = None,
         norm_std: Optional[List[float]] = None,
@@ -130,6 +131,8 @@ class TendonDatasetV2(Dataset):
         self.subtraction_reference = subtraction_reference
         self.augmentation = augmentation
         self.return_force_sequence = return_force_sequence
+        self.force_mean = None
+        self.force_std = None
 
         # Filter phantom types
         if exclude_phantom_types:
@@ -141,7 +144,14 @@ class TendonDatasetV2(Dataset):
             mask = self.df["run_id"].str.contains(exclude_run_regex, regex=True)
             n_excluded = mask.sum()
             self.df = self.df[~mask].reset_index(drop=True)
-            print(f"Excluded {n_excluded} frames matching run_regex='{exclude_run_regex}'")
+            print(f"Excluded {n_excluded} frames matching exclude_run_regex='{exclude_run_regex}'")
+
+        # Keep only run_ids matching regex (e.g. "traverse" for traverse-only training)
+        if include_run_regex:
+            mask = self.df["run_id"].str.contains(include_run_regex, regex=True)
+            n_kept = mask.sum()
+            self.df = self.df[mask].reset_index(drop=True)
+            print(f"Kept {n_kept} frames matching include_run_regex='{include_run_regex}'")
 
         # Drop boundary frames for crossed/double phantoms (p4, p5).
         # Near the single↔crossed/double transition (gy≈0), the probe sees
@@ -256,6 +266,31 @@ class TendonDatasetV2(Dataset):
             first_idx = sorted_group.index[0]
             for idx in sorted_group.index:
                 self.reference_index[idx] = first_idx
+
+    def compute_force_stats(self, indices):
+        """Compute per-channel mean/std from training frames for z-score normalization.
+
+        Args:
+            indices: List of DataFrame indices (training split only)
+        """
+        force_data = self.df.iloc[indices][self.FORCE_COLS].values.astype(np.float32)
+        mean = force_data.mean(axis=0)
+        std = force_data.std(axis=0)
+        std = np.maximum(std, 1e-8)
+        self.force_mean = torch.tensor(mean, dtype=torch.float32)
+        self.force_std = torch.tensor(std, dtype=torch.float32)
+        print("Force z-score stats (from training split):")
+        for i, col in enumerate(self.FORCE_COLS):
+            print(f"  {col}: mean={mean[i]:.6f}, std={std[i]:.6f}")
+
+    def _normalize_force(self, force: torch.Tensor) -> torch.Tensor:
+        """Apply z-score normalization to force tensor.
+
+        Handles both (6,) spatial and (T, 6) temporal shapes via broadcasting.
+        """
+        if self.force_mean is None:
+            return force
+        return (force - self.force_mean) / self.force_std
 
     def _normalize_image(self, img: torch.Tensor) -> torch.Tensor:
         """Apply normalization if configured."""
@@ -379,12 +414,12 @@ class TendonDatasetV2(Dataset):
                         [frame_row[c] for c in self.FORCE_COLS], dtype=torch.float32
                     )
                     forces.append(force_vec)
-                force = torch.stack(forces)  # (T, 6)
+                force = self._normalize_force(torch.stack(forces))  # (T, 6)
             else:
                 # Just current frame's force
-                force = torch.tensor(
+                force = self._normalize_force(torch.tensor(
                     [row[c] for c in self.FORCE_COLS], dtype=torch.float32
-                )
+                ))
         else:
             # Spatial mode: single image
             images = self._load_image(idx, normalize=False)
@@ -401,9 +436,9 @@ class TendonDatasetV2(Dataset):
             images = self._normalize_image(images)
 
             # Force / torque (single frame)
-            force = torch.tensor(
+            force = self._normalize_force(torch.tensor(
                 [row[c] for c in self.FORCE_COLS], dtype=torch.float32
-            )
+            ))
 
         # Label
         label = torch.tensor(int(row["tendon_type"]), dtype=torch.long)

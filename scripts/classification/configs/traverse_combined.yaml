@@ -1,0 +1,64 @@
+experiment:
+  name: "traverse_combined"
+  project: "TendonClassifier"
+  seed: 42
+
+model:
+  type: "temporal"
+  encoder:
+    name: "resnet18"
+    pretrained: true
+    freeze: true
+  temporal:
+    num_frames: 16
+    aggregation: "attention"
+  fusion:
+    type: "token_self_attention"
+    hidden_dim: 128
+    num_heads: 4
+    num_layers: 1
+    dropout: 0.1
+  num_classes: 4
+  use_force: true
+  use_depth_head: false
+
+data:
+  manifest: "../labeling/output/gt_dataset/gt_manifest.csv"
+  include_run_regex: "traverse"
+  normalization:
+    type: "imagenet"
+  subtraction:
+    enabled: false
+  augmentation:
+    enabled: false
+
+training:
+  epochs: 40
+  batch_size: 16
+  lr: 0.0001
+  weight_decay: 0.0001
+  optimizer: "adamw"
+  scheduler:
+    type: "cosine"
+    warmup_epochs: 5
+  loss:
+    class_weights: "balanced"
+    depth_weight: 0.1
+  val_ratio: 0.1
+  split_by: "frame"
+  split:
+    test_ratio: 0.1
+
+checkpoint:
+  dir: "checkpoints"
+  save_best: true
+  save_last: true
+  save_every_n_epochs: 5
+
+logging:
+  wandb:
+    enabled: true
+    tags: ["temporal", "combined", "traverse-only", "token_self_attention"]
+  csv:
+    enabled: true
+  print_every: 1
