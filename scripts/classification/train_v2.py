@@ -24,8 +24,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.metrics import classification_report, confusion_matrix
-from torch.utils.data import DataLoader, Subset
+from sklearn.metrics import classification_report, confusion_matrix, f1_score
+from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
 
 from config import load_config, config_to_dict
 from dataset import TendonDatasetV2
@@ -72,6 +72,153 @@ def split_by_run(dataset, val_ratio=0.2, seed=42):
     print(f"  Val:   {n_val} runs, {len(val_idx)} frames")
 
     return Subset(dataset, train_idx), Subset(dataset, val_idx)
+
+
+def split_by_run_stratified(dataset, val_ratio=0.2, seed=42, val_n_override=None,
+                            train_n_override=None, frame_split_phantoms=None,
+                            forced_val_runs=None):
+    """Split by run, stratified by phantom_type so every phantom appears in val.
+
+    Groups runs by phantom_type, then allocates at least 1 run per phantom to
+    val. This ensures all tendon-type classes (none/single/crossed/double) are
+    represented in the validation set regardless of the random seed.
+
+    Args:
+        val_n_override: Optional dict mapping phantom_type -> exact n_val.
+            Overrides val_ratio for specific phantoms. E.g. {"p4": 2, "p5": 2}
+            to give the rare-class phantoms extra val coverage.
+        train_n_override: Optional dict mapping phantom_type -> max n_train.
+            Limits training runs per phantom — excess runs are excluded entirely.
+            E.g. {"p2": 1, "p3": 1} to keep only 1 training run each.
+        frame_split_phantoms: Optional list of phantom types to split at the
+            frame level (50/50) instead of by run. Useful for phantoms with a
+            single run where all frames are nearly identical (e.g. "none").
+        forced_val_runs: Optional list of run_ids that must go to val regardless
+            of diversity sort. Counts toward the n_val quota for their phantom.
+    """
+    df = dataset.df
+    rng = random.Random(seed)
+    forced_val = set(forced_val_runs or [])
+    frame_split_set = set(frame_split_phantoms or [])
+
+    # Map run_id -> phantom_type
+    run_phantom = df.groupby("run_id")["phantom_type"].first().to_dict()
+
+    # Group runs by phantom
+    phantom_runs = {}
+    for run_id, phantom in run_phantom.items():
+        phantom_runs.setdefault(phantom, []).append(run_id)
+
+    train_runs, val_runs, excluded_runs = set(), set(), set()
+    train_idx_extra, val_idx_extra = [], []  # For frame-level splits
+
+    for phantom, runs in sorted(phantom_runs.items()):
+        # --- Frame-level 50/50 split for this phantom ---
+        if phantom in frame_split_set:
+            phantom_indices = df.index[df["phantom_type"] == phantom].tolist()
+            frame_rng = random.Random(seed)
+            frame_rng.shuffle(phantom_indices)
+            mid = len(phantom_indices) // 2
+            train_idx_extra.extend(phantom_indices[:mid])
+            val_idx_extra.extend(phantom_indices[mid:])
+            print(f"  {phantom}: frame-split {mid} train / {len(phantom_indices)-mid} val")
+            continue
+
+        # --- Normal run-level split ---
+        if val_n_override and phantom in val_n_override:
+            n_val = min(val_n_override[phantom], len(runs) - 1)
+        else:
+            n_val = max(1, round(len(runs) * val_ratio))
+
+        # Pre-assign forced val runs for this phantom
+        forced_in_group = [r for r in runs if r in forced_val]
+        remaining = [r for r in runs if r not in forced_val]
+
+        # Sort remaining by class diversity descending (most diverse first)
+        def _sort_key(run_id):
+            n_unique = df[df["run_id"] == run_id]["tendon_type"].nunique()
+            return (-n_unique, rng.random())
+
+        remaining_sorted = sorted(remaining, key=_sort_key)
+
+        # Fill val: forced first, then diversity-sorted
+        val_from_group = forced_in_group[:]
+        slots_left = max(0, n_val - len(val_from_group))
+        val_from_group += remaining_sorted[:slots_left]
+        train_candidates = remaining_sorted[slots_left:]
+
+        # Apply train_n_override: keep only N runs in train, exclude the rest
+        if train_n_override and phantom in train_n_override:
+            n_train = train_n_override[phantom]
+            train_from_group = train_candidates[:n_train]
+            excluded_from_group = train_candidates[n_train:]
+            excluded_runs.update(excluded_from_group)
+        else:
+            train_from_group = train_candidates
+
+        val_runs.update(val_from_group)
+        train_runs.update(train_from_group)
+
+    train_idx = df.index[df["run_id"].isin(train_runs)].tolist() + train_idx_extra
+    val_idx   = df.index[df["run_id"].isin(val_runs)].tolist() + val_idx_extra
+
+    label_names = {0: "none", 1: "single", 2: "crossed", 3: "double"}
+
+    n_train_runs = len(train_runs) + (1 if train_idx_extra else 0)
+    n_val_runs = len(val_runs) + (1 if val_idx_extra else 0)
+    print(f"Stratified split (seed={seed}):")
+    print(f"  Train: {n_train_runs} run-groups, {len(train_idx)} frames")
+    print(f"  Val:   {n_val_runs} run-groups, {len(val_idx)} frames")
+    if excluded_runs:
+        n_excl_frames = len(df[df["run_id"].isin(excluded_runs)])
+        print(f"  Excluded: {len(excluded_runs)} runs, {n_excl_frames} frames")
+    for phantom in sorted(phantom_runs.keys()):
+        if phantom in frame_split_set:
+            continue
+        runs = phantom_runs[phantom]
+        t = sum(1 for r in runs if r in train_runs)
+        v = sum(1 for r in runs if r in val_runs)
+        e = sum(1 for r in runs if r in excluded_runs)
+        extra = f", {e} excluded" if e else ""
+        print(f"    {phantom}: {t} train, {v} val{extra}")
+
+    # Print class distribution
+    for split_name, idx_list in [("Train", train_idx), ("Val", val_idx)]:
+        split_df = df.iloc[idx_list]
+        counts = split_df["tendon_type"].value_counts().sort_index()
+        print(f"  {split_name} class distribution:")
+        for cls, cnt in counts.items():
+            print(f"    class {cls} ({label_names.get(cls, cls)}): {cnt} ({cnt/len(split_df)*100:.1f}%)")
+
+    return Subset(dataset, train_idx), Subset(dataset, val_idx)
+
+
+def get_balanced_sampler(subset):
+    """WeightedRandomSampler that gives each class equal expected frequency.
+
+    Assigns per-sample weights = 1 / class_count so that each class is sampled
+    at equal rate regardless of its frequency in the subset. Total samples per
+    epoch stays equal to the subset size (with replacement).
+    """
+    df = subset.dataset.df
+    labels = np.array([df.iloc[i]["tendon_type"] for i in subset.indices])
+
+    class_counts = np.bincount(labels, minlength=4).astype(float)
+    class_counts = np.maximum(class_counts, 1)  # avoid div/0
+    sample_weights = 1.0 / class_counts[labels]
+
+    print(f"  Balanced sampler weights (inverse class freq):")
+    label_names = {0: "none", 1: "single", 2: "crossed", 3: "double"}
+    for cls in range(4):
+        if class_counts[cls] > 1:
+            print(f"    class {cls} ({label_names[cls]}): "
+                  f"count={int(class_counts[cls])}, weight={1/class_counts[cls]:.5f}")
+
+    return WeightedRandomSampler(
+        weights=sample_weights.tolist(),
+        num_samples=len(sample_weights),
+        replacement=True,
+    )
 
 
 def get_class_weights(dataset, num_classes: int, method: str = "balanced"):
@@ -153,6 +300,8 @@ def run_epoch(model, loader, optimizer, device, config, class_weights=None,
     total = 0
     depth_abs_err = 0.0
     depth_count = 0
+    all_preds = []
+    all_labels_list = []
 
     model_type = config.model.type
     use_force = config.model.use_force
@@ -220,6 +369,8 @@ def run_epoch(model, loader, optimizer, device, config, class_weights=None,
             preds = cls_logits.argmax(dim=1)
             correct += (preds == labels).sum().item()
             total += bs
+            all_preds.append(preds.cpu().numpy())
+            all_labels_list.append(labels.cpu().numpy())
 
             # Depth MAE on present samples
             depth_mask = labels > 0
@@ -229,6 +380,9 @@ def run_epoch(model, loader, optimizer, device, config, class_weights=None,
 
     n = total
     depth_mae = depth_abs_err / depth_count if depth_count > 0 else 0.0
+    all_preds_np = np.concatenate(all_preds)
+    all_labels_np = np.concatenate(all_labels_list)
+    macro_f1 = f1_score(all_labels_np, all_preds_np, average="macro", zero_division=0)
 
     return {
         "loss": total_loss / n,
@@ -236,6 +390,7 @@ def run_epoch(model, loader, optimizer, device, config, class_weights=None,
         "depth_loss": total_depth_loss / n,
         "acc": correct / n,
         "depth_mae": depth_mae,
+        "macro_f1": macro_f1,
     }
 
 
@@ -350,6 +505,7 @@ def main():
         manifest_csv=config.data.manifest,
         img_size=(config.data.img_size, config.data.img_size),
         exclude_phantom_types=config.data.exclude_phantoms,
+        exclude_run_regex=config.data.exclude_run_regex,
         normalization=config.data.normalization.type,
         norm_mean=config.data.normalization.mean,
         norm_std=config.data.normalization.std,
@@ -372,24 +528,44 @@ def main():
     print(f"Dataset: {len(dataset)} samples")
     print(f"Class distribution: {dataset.get_class_distribution()}")
 
-    # Split
-    train_ds, val_ds = split_by_run(
-        dataset, val_ratio=config.training.val_ratio, seed=config.experiment.seed
+    # Split (stratified by phantom type so all classes appear in val).
+    # Config-driven: see training.split in YAML for val_n_override,
+    # train_n_override, and frame_split_phantoms.
+    split_cfg = config.training.split
+    train_ds, val_ds = split_by_run_stratified(
+        dataset, val_ratio=config.training.val_ratio, seed=config.experiment.seed,
+        val_n_override=split_cfg.val_n_override,
+        train_n_override=split_cfg.train_n_override,
+        frame_split_phantoms=split_cfg.frame_split_phantoms,
     )
 
-    train_loader = DataLoader(
-        train_ds, batch_size=config.training.batch_size, shuffle=True, num_workers=4
-    )
+    # Balanced sampler: oversample minority classes so each class is seen equally
+    use_balanced = getattr(config.training, "balanced_sampling", True)
+    if use_balanced:
+        sampler = get_balanced_sampler(train_ds)
+        train_loader = DataLoader(
+            train_ds, batch_size=config.training.batch_size,
+            sampler=sampler, num_workers=4, drop_last=True
+        )
+    else:
+        train_loader = DataLoader(
+            train_ds, batch_size=config.training.batch_size,
+            shuffle=True, num_workers=4, drop_last=True
+        )
     val_loader = DataLoader(
         val_ds, batch_size=config.training.batch_size, shuffle=False, num_workers=4
     )
 
-    # Class weights
-    class_weights = get_class_weights(
-        dataset, config.model.num_classes, config.training.loss.class_weights
-    )
-    if class_weights is not None:
-        print(f"Class weights: {class_weights.tolist()}")
+    # Class weights — disable when balanced_sampling is on to avoid double-correction
+    if use_balanced:
+        class_weights = None
+        print("Balanced sampler active → class-weighted loss disabled (would double-correct)")
+    else:
+        class_weights = get_class_weights(
+            dataset, config.model.num_classes, config.training.loss.class_weights
+        )
+        if class_weights is not None:
+            print(f"Class weights: {class_weights.tolist()}")
 
     # Model
     model = get_model_v2(config.model).to(device)
@@ -445,9 +621,9 @@ def main():
         with open(csv_path, "w", newline="") as f:
             csv.writer(f).writerow([
                 "epoch", "train_loss", "train_cls_loss", "train_depth_loss",
-                "train_acc", "train_depth_mae",
+                "train_acc", "train_macro_f1", "train_depth_mae",
                 "val_loss", "val_cls_loss", "val_depth_loss",
-                "val_acc", "val_depth_mae", "lr",
+                "val_acc", "val_macro_f1", "val_depth_mae", "lr",
             ])
 
     # Resume from checkpoint
@@ -464,7 +640,7 @@ def main():
     # Training loop
     history = {k: [] for k in ["train_loss", "val_loss", "train_acc", "val_acc",
                                 "train_depth_mae", "val_depth_mae"]}
-    best_val_acc = 0.0
+    best_val_macro_f1 = 0.0
 
     for epoch in range(start_epoch, config.training.epochs):
         # Warmup phase
@@ -501,6 +677,7 @@ def main():
             print(f"Epoch {epoch+1}/{config.training.epochs}  "
                   f"loss={train_metrics['loss']:.4f}/{val_metrics['loss']:.4f}  "
                   f"acc={train_metrics['acc']:.4f}/{val_metrics['acc']:.4f}  "
+                  f"macro_f1={train_metrics['macro_f1']:.4f}/{val_metrics['macro_f1']:.4f}  "
                   f"depth_mae={train_metrics['depth_mae']:.3f}/{val_metrics['depth_mae']:.3f} mm  "
                   f"lr={current_lr:.2e}")
 
@@ -513,19 +690,19 @@ def main():
                 csv.writer(f).writerow([
                     epoch + 1,
                     train_metrics["loss"], train_metrics["cls_loss"], train_metrics["depth_loss"],
-                    train_metrics["acc"], train_metrics["depth_mae"],
+                    train_metrics["acc"], train_metrics["macro_f1"], train_metrics["depth_mae"],
                     val_metrics["loss"], val_metrics["cls_loss"], val_metrics["depth_loss"],
-                    val_metrics["acc"], val_metrics["depth_mae"], current_lr,
+                    val_metrics["acc"], val_metrics["macro_f1"], val_metrics["depth_mae"], current_lr,
                 ])
 
         # Checkpointing
         metrics = {"train": train_metrics, "val": val_metrics}
 
-        # Save best model
-        if config.checkpoint.save_best and val_metrics["acc"] > best_val_acc:
-            best_val_acc = val_metrics["acc"]
+        # Save best model (tracked by val macro-F1, not accuracy)
+        if config.checkpoint.save_best and val_metrics["macro_f1"] > best_val_macro_f1:
+            best_val_macro_f1 = val_metrics["macro_f1"]
             save_checkpoint(model, optimizer, epoch, metrics, ckpt_dir / "best.pth", config)
-            print(f"  New best model saved (val_acc={best_val_acc:.4f})")
+            print(f"  New best model saved (val_macro_f1={best_val_macro_f1:.4f})")
 
         # Save every N epochs
         if config.checkpoint.save_every_n_epochs > 0:
@@ -596,7 +773,7 @@ def main():
     logger.finish()
 
     print(f"\nTraining complete!")
-    print(f"  Best val accuracy: {best_val_acc:.4f}")
+    print(f"  Best val macro-F1: {best_val_macro_f1:.4f}")
     print(f"  Checkpoints saved to: {ckpt_dir}")
 
 

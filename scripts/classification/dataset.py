@@ -94,6 +94,7 @@ class TendonDatasetV2(Dataset):
         img_size: Tuple[int, int] = (224, 224),
         dataset_root: Optional[str] = None,
         exclude_phantom_types: Optional[List[str]] = None,
+        exclude_run_regex: Optional[str] = None,
         normalization: str = "imagenet",  # "imagenet" or "simple"
         norm_mean: Optional[List[float]] = None,
         norm_std: Optional[List[float]] = None,
@@ -134,6 +135,28 @@ class TendonDatasetV2(Dataset):
         if exclude_phantom_types:
             self.df = self.df[~self.df["phantom_type"].isin(exclude_phantom_types)]
             self.df = self.df.reset_index(drop=True)
+
+        # Filter run_ids by regex (e.g. "_nat-" to exclude natural arc runs)
+        if exclude_run_regex:
+            mask = self.df["run_id"].str.contains(exclude_run_regex, regex=True)
+            n_excluded = mask.sum()
+            self.df = self.df[~mask].reset_index(drop=True)
+            print(f"Excluded {n_excluded} frames matching run_regex='{exclude_run_regex}'")
+
+        # Drop boundary frames for crossed/double phantoms (p4, p5).
+        # Near the single↔crossed/double transition (gy≈0), the probe sees
+        # both regions simultaneously — ambiguous GT. Drop 3mm on each side.
+        BOUNDARY_MARGIN_M = 0.003
+        if "gy" in self.df.columns:
+            boundary_mask = (
+                self.df["phantom_type"].isin(["p4", "p5"]) &
+                (self.df["presence"] == 1) &
+                (self.df["gy"].abs() < BOUNDARY_MARGIN_M)
+            )
+            n_boundary = boundary_mask.sum()
+            if n_boundary > 0:
+                self.df = self.df[~boundary_mask].reset_index(drop=True)
+                print(f"Excluded {n_boundary} boundary frames (p4/p5, |gy|<{BOUNDARY_MARGIN_M*1000:.0f}mm)")
 
         # Dataset root
         if dataset_root is None:

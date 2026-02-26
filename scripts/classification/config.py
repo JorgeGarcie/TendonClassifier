@@ -5,7 +5,7 @@ Provides dataclasses for type-safe configuration and YAML loading utilities.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -83,6 +83,7 @@ class DataConfig:
     subtraction: SubtractionConfig = field(default_factory=SubtractionConfig)
     augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
     exclude_phantoms: Optional[list] = None
+    exclude_run_regex: Optional[str] = None  # Regex pattern to exclude run_ids (e.g. "_nat-" for nat arc runs)
 
 
 @dataclass
@@ -98,6 +99,14 @@ class LossConfig:
 
 
 @dataclass
+class SplitConfig:
+    """Controls how runs are assigned to train vs val."""
+    val_n_override: Optional[Dict[str, int]] = None   # phantom -> n_val runs
+    train_n_override: Optional[Dict[str, int]] = None  # phantom -> max n_train runs (excess excluded)
+    frame_split_phantoms: Optional[List[str]] = None   # phantoms split 50/50 by frame (not by run)
+
+
+@dataclass
 class TrainingConfig:
     epochs: int = 100
     batch_size: int = 32
@@ -107,7 +116,9 @@ class TrainingConfig:
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     loss: LossConfig = field(default_factory=LossConfig)
     val_ratio: float = 0.2
-    split_by: str = "run"  # run | random
+    split_by: str = "run"  # run | random (always stratified by phantom type)
+    balanced_sampling: bool = True  # oversample minority classes in training loader
+    split: SplitConfig = field(default_factory=SplitConfig)
 
 
 @dataclass
@@ -247,6 +258,7 @@ def _build_data_config(data: dict) -> DataConfig:
         ),
         augmentation=augmentation,
         exclude_phantoms=data.get("exclude_phantoms"),
+        exclude_run_regex=data.get("exclude_run_regex"),
     )
 
 
@@ -254,6 +266,13 @@ def _build_training_config(data: dict) -> TrainingConfig:
     """Build TrainingConfig with nested dataclasses."""
     if not data:
         return TrainingConfig()
+
+    split_data = data.get("split", {})
+    split_config = SplitConfig(
+        val_n_override=split_data.get("val_n_override"),
+        train_n_override=split_data.get("train_n_override"),
+        frame_split_phantoms=split_data.get("frame_split_phantoms"),
+    )
 
     return TrainingConfig(
         epochs=data.get("epochs", 100),
@@ -265,6 +284,8 @@ def _build_training_config(data: dict) -> TrainingConfig:
         loss=_dict_to_dataclass(LossConfig, data.get("loss", {})),
         val_ratio=data.get("val_ratio", 0.2),
         split_by=data.get("split_by", "run"),
+        balanced_sampling=data.get("balanced_sampling", True),
+        split=split_config,
     )
 
 
