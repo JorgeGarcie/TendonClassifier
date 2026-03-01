@@ -20,7 +20,7 @@ model:
 data:
   manifest: "../labeling/output/gt_dataset/gt_manifest.csv"
   img_size: 224  # Not used but required by config schema
-  exclude_run_regex: "_nat-"  # Exclude natural arc runs (unreliable GT — use as test set only)
+  include_run_regex: "traverse"
   normalization:
     type: "imagenet"
   subtraction:
@@ -30,7 +30,7 @@ data:
 
 training:
   epochs: 40
-  batch_size: 32  # Can use larger batch since no images
+  batch_size: 32
   lr: 0.0001
   weight_decay: 0.0001
   optimizer: "adamw"
@@ -40,18 +40,10 @@ training:
   loss:
     class_weights: "balanced"
     depth_weight: 0.1
-  val_ratio: 0.2
-  split_by: "run"
+  val_ratio: 0.1
+  split_by: "frame"
   split:
-    frame_split_phantoms: ["none"]  # Split none frames 50/50 (single run, all similar)
-    val_n_override:
-      p2: 1
-      p3: 1
-      p4: 2
-      p5: 2
-    train_n_override:  # Keep 1 train run each; excess excluded (single-only, low diversity)
-      p2: 1
-      p3: 1
+    test_ratio: 0.1
 
 checkpoint:
   dir: "checkpoints"

@@ -106,45 +106,54 @@ class CrossModalAttention(nn.Module):
         """Forward pass.
 
         Args:
-            image_feat: Image features of shape (B, D_img)
-            force_feat: Force features of shape (B, D_force)
+            image_feat: Image features of shape (B, D_img) or (B, T, D_img)
+            force_feat: Force features of shape (B, D_force) or (B, T, D_force)
 
         Returns:
-            Fused features of shape (B, hidden_dim)
+            Fused features of shape (B, hidden_dim) or (B, T, hidden_dim)
         """
-        B = image_feat.size(0)
+        temporal = image_feat.dim() == 3
+        if temporal:
+            B, T, _ = image_feat.shape
+            image_feat = image_feat.reshape(B * T, -1)
+            force_feat = force_feat.reshape(B * T, -1)
+
+        N = image_feat.size(0)
 
         # Project to hidden dim
-        img = self.image_proj(image_feat)  # (B, H)
-        force = self.force_proj(force_feat)  # (B, H)
+        img = self.image_proj(image_feat)  # (N, H)
+        force = self.force_proj(force_feat)  # (N, H)
 
         # Reshape for attention (treat as single-token sequences)
-        img = img.unsqueeze(1)  # (B, 1, H)
-        force = force.unsqueeze(1)  # (B, 1, H)
+        img = img.unsqueeze(1)  # (N, 1, H)
+        force = force.unsqueeze(1)  # (N, 1, H)
 
         # Cross-attention: force attends to image
-        q = self.q_proj(force)  # (B, 1, H)
+        q = self.q_proj(force)  # (N, 1, H)
         k = self.k_proj(img)
         v = self.v_proj(img)
 
         # Reshape for multi-head attention
-        q = q.view(B, 1, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k.view(B, 1, self.num_heads, self.head_dim).transpose(1, 2)
-        v = v.view(B, 1, self.num_heads, self.head_dim).transpose(1, 2)
+        q = q.view(N, 1, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(N, 1, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(N, 1, self.num_heads, self.head_dim).transpose(1, 2)
 
         # Attention
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = F.softmax(attn, dim=-1)
         attn = self.dropout(attn)
 
-        attended = (attn @ v).transpose(1, 2).reshape(B, 1, self.hidden_dim)
-        attended = self.out_proj(attended).squeeze(1)  # (B, H)
+        attended = (attn @ v).transpose(1, 2).reshape(N, 1, self.hidden_dim)
+        attended = self.out_proj(attended).squeeze(1)  # (N, H)
 
         # Residual + layer norm
         force_attended = self.layer_norm(force.squeeze(1) + attended)
 
         # Fuse attended force with original image features
         fused = self.fusion_mlp(torch.cat([img.squeeze(1), force_attended], dim=-1))
+
+        if temporal:
+            fused = fused.view(B, T, self.hidden_dim)
 
         return fused
 
@@ -332,6 +341,7 @@ class SimpleFusion(nn.Module):
     def __init__(self, image_dim: int, force_dim: int, hidden_dim: int = 128,
                  dropout: float = 0.3):
         super().__init__()
+        self.hidden_dim = hidden_dim
         self.fusion = nn.Sequential(
             nn.Linear(image_dim + force_dim, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
@@ -344,13 +354,24 @@ class SimpleFusion(nn.Module):
         """Forward pass.
 
         Args:
-            image_feat: Image features of shape (B, D_img)
-            force_feat: Force features of shape (B, D_force)
+            image_feat: Image features of shape (B, D_img) or (B, T, D_img)
+            force_feat: Force features of shape (B, D_force) or (B, T, D_force)
 
         Returns:
-            Fused features of shape (B, hidden_dim)
+            Fused features of shape (B, hidden_dim) or (B, T, hidden_dim)
         """
-        return self.fusion(torch.cat([image_feat, force_feat], dim=-1))
+        temporal = image_feat.dim() == 3
+        if temporal:
+            B, T, _ = image_feat.shape
+            image_feat = image_feat.reshape(B * T, -1)
+            force_feat = force_feat.reshape(B * T, -1)
+
+        out = self.fusion(torch.cat([image_feat, force_feat], dim=-1))
+
+        if temporal:
+            out = out.view(B, T, self.hidden_dim)
+
+        return out
 
 
 class MeanAggregator(nn.Module):
