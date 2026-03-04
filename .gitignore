@@ -22,4 +22,5 @@ output
 *.pth
 
 # Logs and Configs Wandb
-wandb*.safetensors
+wandb/
+*.safetensors
