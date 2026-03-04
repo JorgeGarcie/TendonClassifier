@@ -191,6 +191,9 @@ class SpatialModel(nn.Module):
         fusion_hidden_dim: int = 128,
         use_depth_head: bool = True,
         pretrained: bool = True,
+        fusion_num_heads: int = 4,
+        fusion_num_layers: int = 1,
+        fusion_dropout: float = 0.1,
     ):
         super().__init__()
         self.use_force = use_force
@@ -208,7 +211,9 @@ class SpatialModel(nn.Module):
 
             # Fusion module
             self.fusion = get_fusion_module(
-                fusion_type, encoder_dim, force_dim, fusion_hidden_dim
+                fusion_type, encoder_dim, force_dim, fusion_hidden_dim,
+                num_heads=fusion_num_heads, num_layers=fusion_num_layers,
+                dropout=fusion_dropout,
             )
             head_input_dim = fusion_hidden_dim
         else:
@@ -454,6 +459,9 @@ def get_model_v2(config) -> nn.Module:
             fusion_hidden_dim=fusion_hidden_dim,
             use_depth_head=use_depth_head,
             pretrained=pretrained,
+            fusion_num_heads=fusion_num_heads,
+            fusion_num_layers=fusion_num_layers,
+            fusion_dropout=fusion_dropout,
         )
     elif model_type == "spatial_force":
         # Get hidden_dims from config if available

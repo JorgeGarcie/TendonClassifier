@@ -1,7 +1,10 @@
 """
 Discover and index data runs.
 
-Recursively scans DATA_ROOT for folders matching pattern {phantom}_{motion}_{force}.
+Recursively scans DATA_ROOT for folders matching either:
+  - Old format: {phantom}_{motion}_{force}    e.g. p4_m2s_35N-2025-11-25_22.46.29
+  - New format: {phantom}_{motion}_{angle}_{approach}  e.g. p1_t_0_nat-2026-02-04_15.28.12
+
 Validates each folder and outputs run_manifest.json.
 """
 
@@ -18,7 +21,11 @@ logger = logging.getLogger(__name__)
 
 # Expected files in each run folder
 REQUIRED_FILES = ["frames", "camera_frames.csv", "tcp_pose.csv", "wrench_data.csv"]
-RUN_PATTERN = re.compile(r"^(p\d+)_([a-z0-9]+)_(\d+N)(?:-.+)?$")
+
+# Old format: p4_m2s_35N-<timestamp>
+RUN_PATTERN_OLD = re.compile(r"^(p\d+)_([a-z0-9]+)_(\d+N)(?:-.+)?$")
+# New format: p1_t_0_nat-<timestamp> or p1_t_90_str-<timestamp>
+RUN_PATTERN_NEW = re.compile(r"^(p\d+)_([a-z0-9]+)_(\d+)_([a-z0-9]+)(?:-.+)?$")
 
 # Load phantom configurations
 PHANTOM_CONFIGS = {}
@@ -77,13 +84,20 @@ def discover_runs(data_root):
             continue
 
         folder_name = item.name
-        match = RUN_PATTERN.match(folder_name)
 
-        if not match:
+        # Try old format first, then new format
+        match_old = RUN_PATTERN_OLD.match(folder_name)
+        match_new = RUN_PATTERN_NEW.match(folder_name)
+
+        if match_old:
+            phantom_type, motion_type, force_label = match_old.groups()
+            angle_label, approach_label = None, None
+        elif match_new:
+            phantom_type, motion_type, angle_label, approach_label = match_new.groups()
+            force_label = None
+        else:
             logger.debug(f"Skipping non-matching folder: {folder_name}")
             continue
-
-        phantom_type, motion_type, force_label = match.groups()
 
         # Validate required files
         missing_files = []
@@ -103,6 +117,8 @@ def discover_runs(data_root):
             "phantom_type": phantom_type,
             "motion_type": motion_type,
             "force_label": force_label,
+            "angle_label": angle_label,
+            "approach_label": approach_label,
             "stl_file": stl_cfg.get("stl_file") if stl_cfg else None,
             "rotation_deg": stl_cfg.get("rotation_deg") if stl_cfg else 0,
             "valid": valid,

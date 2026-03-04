@@ -16,8 +16,11 @@ model:
     num_frames: 5
     aggregation: "attention"
   fusion:
-    type: "attention"
+    type: "token_self_attention"
     hidden_dim: 128
+    num_heads: 4
+    num_layers: 1
+    dropout: 0.1
   num_classes: 4
   use_force: true  # Combined: image + force
   use_depth_head: false  # Focus on classification only
@@ -61,7 +64,7 @@ checkpoint:
 logging:
   wandb:
     enabled: true
-    tags: ["temporal", "combined", "image+force"]
+    tags: ["temporal", "combined", "image+force", "token_self_attention"]
   csv:
     enabled: true
   print_every: 1

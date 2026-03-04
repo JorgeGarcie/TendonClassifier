@@ -26,6 +26,7 @@ ENCODER_DIMS = {
     "clip_vit_b16": 512,
     "clip_vit_b32": 512,
     "clip_vit_l14": 768,
+    "sparsh_vitb16": 768,
 }
 
 
@@ -170,6 +171,73 @@ class CLIPEncoder(nn.Module):
         return self.backbone(x.type(self.backbone.conv1.weight.dtype)).float()
 
 
+class SparshEncoder(nn.Module):
+    """Sparsh ViT-B/16 encoder for 6-channel temporal pair input."""
+
+    WEIGHTS_PATH = "checkpoints/sparsh/dinov2_vitbase.safetensors"
+
+    def __init__(self, freeze: bool = True):
+        super().__init__()
+        from sparsh_vit import vit_base
+        self.name = "sparsh_vitb16"
+        self.output_dim = ENCODER_DIMS[self.name]
+
+        self.backbone = vit_base(
+            patch_size=16, in_chans=6, img_size=224,
+            pos_embed_fn="sinusoidal", num_register_tokens=1,
+        )
+        self._load_weights()
+        if freeze:
+            self._freeze()
+
+    def _load_weights(self):
+        from safetensors.torch import load_file
+        from pathlib import Path
+
+        weights_path = Path(__file__).parent / self.WEIGHTS_PATH
+        if not weights_path.exists():
+            raise FileNotFoundError(
+                f"Sparsh weights not found at {weights_path}. "
+                "Download from huggingface.co/facebook/sparsh-dinov2-base"
+            )
+        state_dict = load_file(str(weights_path))
+        # The checkpoint may have keys with "teacher.backbone." prefix
+        cleaned = {}
+        for k, v in state_dict.items():
+            k = k.replace("teacher.backbone.", "").replace("teacher.", "")
+            cleaned[k] = v
+
+        # patch_embed.proj expects 6 input channels but pretrained weights have 3.
+        # Tile the conv1 weight across the channel dimension (3ch -> 6ch).
+        proj_key = "patch_embed.proj.weight"
+        if proj_key in cleaned and cleaned[proj_key].shape[1] == 3:
+            w = cleaned[proj_key]  # (768, 3, 16, 16)
+            cleaned[proj_key] = w.repeat(1, 2, 1, 1) / 2.0  # avg preserves scale
+
+        msg = self.backbone.load_state_dict(cleaned, strict=False)
+        if msg.missing_keys:
+            print(f"Sparsh: missing keys (expected for sinusoidal pos_embed): "
+                  f"{msg.missing_keys}")
+        if msg.unexpected_keys:
+            print(f"Sparsh: unexpected keys (ignored): {msg.unexpected_keys}")
+
+    def _freeze(self):
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x: Input tensor of shape (B, 6, H, W) — concatenated temporal pair
+
+        Returns:
+            Feature tensor of shape (B, 768) — mean-pooled patch tokens
+        """
+        patch_tokens = self.backbone(x)  # (B, N, 768)
+        return patch_tokens.mean(dim=1)  # (B, 768)
+
+
 def get_encoder(name: str, pretrained: bool = True,
                 freeze: bool = True) -> nn.Module:
     """Factory function to create vision encoders.
@@ -191,6 +259,8 @@ def get_encoder(name: str, pretrained: bool = True,
         return DinoV2Encoder(name, freeze)
     elif name.startswith("clip"):
         return CLIPEncoder(name, freeze)
+    elif name == "sparsh_vitb16":
+        return SparshEncoder(freeze=freeze)
     else:
         raise ValueError(
             f"Unknown encoder: {name}. "

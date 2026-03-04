@@ -1,0 +1,68 @@
+# Sparsh temporal tokenization — Combined (image pair + force)
+# 6-channel input: img_t (subtracted) + img_{t-stride} (subtracted) → Sparsh ViT → fusion → classifier
+
+experiment:
+  name: "sparsh_temporal_combined"
+  project: "TendonClassifier"
+  seed: 42
+
+model:
+  type: "spatial"  # Sparsh bakes temporal context into encoder input, so model is still spatial
+  encoder:
+    name: "sparsh_vitb16"
+    pretrained: true
+    freeze: true
+  fusion:
+    type: "token_self_attention"
+    hidden_dim: 128
+    num_heads: 4
+    num_layers: 1
+    dropout: 0.1
+  num_classes: 4
+  use_force: true
+  use_depth_head: false
+
+data:
+  manifest: "../labeling/output/gt_dataset/gt_manifest.csv"
+  img_size: 224
+  include_run_regex: "traverse|p1_t_0_str"
+  sparsh_temporal_stride: 3  # ~100ms at 30Hz (close to Sparsh's 80ms at 60Hz)
+  normalization:
+    type: "none"  # Sparsh ViT expects raw [0,1] — no mean/std normalization
+  subtraction:
+    enabled: true
+    reference: "first_frame"
+    type: "sparsh"  # (img - ref) + 0.5, clipped to [0,1]
+  augmentation:
+    enabled: false
+
+training:
+  epochs: 40
+  batch_size: 16
+  lr: 4.36e-5
+  weight_decay: 3.33e-4
+  optimizer: "adam"
+  scheduler:
+    type: "cosine"
+    warmup_epochs: 5
+  loss:
+    class_weights: "balanced"
+    depth_weight: 0.1
+  val_ratio: 0.1
+  split_by: "frame"
+  split:
+    test_ratio: 0.1
+
+checkpoint:
+  dir: "checkpoints"
+  save_best: true
+  save_last: true
+  save_every_n_epochs: 5
+
+logging:
+  wandb:
+    enabled: true
+    tags: ["sparsh", "temporal_tokenization", "combined", "image+force", "6ch"]
+  csv:
+    enabled: true
+  print_every: 1

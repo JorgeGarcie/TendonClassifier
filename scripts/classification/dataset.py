@@ -102,8 +102,10 @@ class TendonDatasetV2(Dataset):
         temporal_frames: int = 1,  # 1 = spatial mode, >1 = temporal mode
         subtraction_enabled: bool = False,
         subtraction_reference: str = "first_frame",  # "first_frame", "pre_contact", or path
+        subtraction_type: str = "simple",  # "simple": img-ref | "sparsh": (img-ref)+0.5, clipped
         augmentation: Optional[dict] = None,
         return_force_sequence: bool = False,  # For temporal_force model
+        sparsh_temporal_stride: int = 0,  # >0: build 6ch temporal pairs for Sparsh
     ):
         """Initialize the dataset.
 
@@ -129,8 +131,10 @@ class TendonDatasetV2(Dataset):
         self.temporal_frames = temporal_frames
         self.subtraction_enabled = subtraction_enabled
         self.subtraction_reference = subtraction_reference
+        self.subtraction_type = subtraction_type
         self.augmentation = augmentation
         self.return_force_sequence = return_force_sequence
+        self.sparsh_temporal_stride = sparsh_temporal_stride
         self.force_mean = None
         self.force_std = None
 
@@ -191,8 +195,14 @@ class TendonDatasetV2(Dataset):
             self._build_temporal_index()
 
         # Compute reference frames for subtraction if needed
+        # (must come before sparsh pair index so partner refs can be captured)
         if subtraction_enabled:
             self._build_reference_index()
+
+        # Build Sparsh temporal pair index — captures partner/ref paths,
+        # then filters df to exclude frames without valid partners.
+        if sparsh_temporal_stride > 0:
+            self._build_sparsh_pair_index()
 
     def _build_temporal_index(self):
         """Build index mapping each sample to its previous frames."""
@@ -267,6 +277,56 @@ class TendonDatasetV2(Dataset):
             for idx in sorted_group.index:
                 self.reference_index[idx] = first_idx
 
+    def _build_sparsh_pair_index(self):
+        """Map each sample to the frame `sparsh_temporal_stride` steps back.
+
+        Captures partner image paths (and reference paths for subtraction)
+        BEFORE filtering, then drops invalid frames from self.df so downstream
+        code (splitter, sampler) sees only usable samples.
+        """
+        stride = self.sparsh_temporal_stride
+
+        # Pass 1: capture partner paths from the full df
+        pair_data = {}   # orig_idx -> {partner_path, ref_path}
+        valid_orig = []
+        for run_id, group in self.df.groupby("run_id"):
+            sorted_group = group.sort_values("frame_idx")
+            indices = sorted_group.index.tolist()
+
+            # Reference image path for this run (shared by all frames)
+            ref_path = None
+            if self.subtraction_enabled and hasattr(self, 'reference_index'):
+                ref_orig = self.reference_index[indices[0]]
+                ref_path = str(self.dataset_root / self.df.iloc[ref_orig]["image_path"])
+
+            for i, idx in enumerate(indices):
+                if i < stride:
+                    continue
+                partner_orig = indices[i - stride]
+                pair_data[idx] = {
+                    "partner_path": str(self.dataset_root / self.df.iloc[partner_orig]["image_path"]),
+                    "ref_path": ref_path,
+                }
+                valid_orig.append(idx)
+
+        n_dropped = len(self.df) - len(valid_orig)
+
+        # Pass 2: filter df to valid samples, reset index
+        self.df = self.df.loc[valid_orig].reset_index(drop=True)
+
+        # Translate pair_data to new contiguous indices
+        self._sparsh_pair_data = {}
+        for new_idx, orig_idx in enumerate(valid_orig):
+            self._sparsh_pair_data[new_idx] = pair_data[orig_idx]
+
+        # Rebuild reference index on filtered df (for current-frame lookups)
+        if self.subtraction_enabled:
+            self._build_reference_index()
+
+        if n_dropped:
+            print(f"Sparsh stride={stride}: dropped {n_dropped} frames without "
+                  f"valid partner ({n_dropped + len(self.df)} → {len(self.df)})")
+
     def compute_force_stats(self, indices):
         """Compute per-channel mean/std from training frames for z-score normalization.
 
@@ -282,6 +342,22 @@ class TendonDatasetV2(Dataset):
         print("Force z-score stats (from training split):")
         for i, col in enumerate(self.FORCE_COLS):
             print(f"  {col}: mean={mean[i]:.6f}, std={std[i]:.6f}")
+
+    def _subtract(self, img: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+        """Subtract reference from image using configured method.
+
+        Args:
+            img: Image tensor in [0, 1] range
+            ref: Reference tensor in [0, 1] range
+
+        Returns:
+            simple: img - ref (can be negative)
+            sparsh: (img - ref) + 0.5, clipped to [0, 1]
+        """
+        diff = img - ref
+        if self.subtraction_type == "sparsh":
+            return (diff + 0.5).clamp(0.0, 1.0)
+        return diff
 
     def _normalize_force(self, force: torch.Tensor) -> torch.Tensor:
         """Apply z-score normalization to force tensor.
@@ -321,6 +397,18 @@ class TendonDatasetV2(Dataset):
             # Load per-sample reference
             ref_idx = self.reference_index[idx]
             return self._load_image(ref_idx, normalize=False)
+
+    def _load_image_from_path(self, path: str) -> torch.Tensor:
+        """Load and resize an image by absolute path (no normalization).
+
+        Used for Sparsh partner/reference images whose df rows may have been dropped.
+        """
+        img = cv2.imread(path)
+        if img is None:
+            raise FileNotFoundError(f"Could not load image: {path}")
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, self.img_size)
+        return torch.tensor(img, dtype=torch.float32).permute(2, 0, 1) / 255.0
 
     def _load_image(self, idx: int, normalize: bool = True) -> torch.Tensor:
         """Load and preprocess a single image.
@@ -397,7 +485,7 @@ class TendonDatasetV2(Dataset):
             # Apply subtraction if enabled (raw pixel space)
             if self.subtraction_enabled:
                 ref_images = torch.stack([self._load_reference_image(i) for i in frame_indices])
-                images = images - ref_images
+                images = self._subtract(images, ref_images)
 
             # Normalize after subtraction
             images = self._normalize_image(images)
@@ -427,13 +515,24 @@ class TendonDatasetV2(Dataset):
             # Apply subtraction if enabled (raw pixel space)
             if self.subtraction_enabled:
                 ref_img = self._load_reference_image(idx)
-                images = images - ref_img
+                images = self._subtract(images, ref_img)
 
-            # Apply augmentation
-            images = self._apply_augmentation(images)
-
-            # Normalize after subtraction/augmentation
-            images = self._normalize_image(images)
+            # Sparsh temporal pair: concat current + stride-back frame → 6ch
+            if self.sparsh_temporal_stride > 0:
+                pair = self._sparsh_pair_data[idx]
+                partner_img = self._load_image_from_path(pair["partner_path"])
+                if self.subtraction_enabled and pair["ref_path"]:
+                    ref_img_partner = self._load_image_from_path(pair["ref_path"])
+                    partner_img = self._subtract(partner_img, ref_img_partner)
+                # Normalize each 3ch half (no-op when type="none" for Sparsh)
+                images = self._normalize_image(images)
+                partner_img = self._normalize_image(partner_img)
+                images = torch.cat([images, partner_img], dim=0)  # (6, H, W)
+            else:
+                # Apply augmentation
+                images = self._apply_augmentation(images)
+                # Normalize after subtraction/augmentation
+                images = self._normalize_image(images)
 
             # Force / torque (single frame)
             force = self._normalize_force(torch.tensor(

@@ -1,0 +1,51 @@
+{
+  "checkpoint": "checkpoints/sparsh_temporal_image_only_v2/best.pth",
+  "eval_regex": "p1_t_0_str",
+  "overall": {
+    "n_samples": 298,
+    "accuracy": 0.9932885906040269,
+    "macro_f1": 0.4983164983164983,
+    "per_class": {
+      "none": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0
+      },
+      "single": {
+        "precision": 1.0,
+        "recall": 0.9932885906040269,
+        "f1": 0.9966329966329966,
+        "support": 298
+      }
+    }
+  },
+  "per_phantom": {
+    "p1": {
+      "n_samples": 298,
+      "accuracy": 0.9932885906040269,
+      "macro_f1": 0.4983164983164983,
+      "per_class": {
+        "none": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 0
+        },
+        "single": {
+          "precision": 1.0,
+          "recall": 0.9932885906040269,
+          "f1": 0.9966329966329966,
+          "support": 298
+        }
+      }
+    }
+  },
+  "per_run": {
+    "p1_t_0_str-2026-02-04_15.28.12": {
+      "n_samples": 298,
+      "accuracy": 0.9932885906040269,
+      "macro_f1": 0.4983164983164983
+    }
+  }
+}

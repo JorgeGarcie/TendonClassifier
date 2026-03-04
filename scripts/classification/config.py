@@ -61,6 +61,7 @@ class NormalizationConfig:
 class SubtractionConfig:
     enabled: bool = False
     reference: str = "first_frame"  # first_frame | pre_contact | /path/to/image.png
+    type: str = "simple"  # simple: (img - ref) | sparsh: (img - ref) + 0.5, clipped [0,1]
 
 
 @dataclass
@@ -85,6 +86,7 @@ class DataConfig:
     normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
     subtraction: SubtractionConfig = field(default_factory=SubtractionConfig)
     augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
+    sparsh_temporal_stride: int = 0  # >0: Sparsh 6ch temporal pairs (stride in frames)
     exclude_phantoms: Optional[list] = None
     exclude_run_regex: Optional[str] = None  # Regex pattern to exclude run_ids (e.g. "_nat-" for nat arc runs)
     include_run_regex: Optional[str] = None  # Regex pattern to include only matching run_ids
@@ -188,6 +190,29 @@ def _dict_to_dataclass(cls, data: dict):
     return cls(**kwargs)
 
 
+def load_config_from_dict(data: dict) -> Config:
+    """Build a Config dataclass from a raw YAML-like dict.
+
+    Args:
+        data: Nested dict (e.g. from yaml.safe_load or sweep overlay).
+
+    Returns:
+        Config dataclass with all settings.
+    """
+    return Config(
+        experiment=_dict_to_dataclass(
+            ExperimentConfig, data.get("experiment", {})
+        ),
+        model=_build_model_config(data.get("model", {})),
+        data=_build_data_config(data.get("data", {})),
+        training=_build_training_config(data.get("training", {})),
+        checkpoint=_dict_to_dataclass(
+            CheckpointConfig, data.get("checkpoint", {})
+        ),
+        logging=_build_logging_config(data.get("logging", {})),
+    )
+
+
 def load_config(config_path: str) -> Config:
     """Load configuration from a YAML file.
 
@@ -204,21 +229,7 @@ def load_config(config_path: str) -> Config:
     with open(config_path) as f:
         data = yaml.safe_load(f)
 
-    # Build Config from nested dicts
-    config = Config(
-        experiment=_dict_to_dataclass(
-            ExperimentConfig, data.get("experiment", {})
-        ),
-        model=_build_model_config(data.get("model", {})),
-        data=_build_data_config(data.get("data", {})),
-        training=_build_training_config(data.get("training", {})),
-        checkpoint=_dict_to_dataclass(
-            CheckpointConfig, data.get("checkpoint", {})
-        ),
-        logging=_build_logging_config(data.get("logging", {})),
-    )
-
-    return config
+    return load_config_from_dict(data)
 
 
 def _build_model_config(data: dict) -> ModelConfig:
@@ -262,6 +273,7 @@ def _build_data_config(data: dict) -> DataConfig:
             SubtractionConfig, data.get("subtraction", {})
         ),
         augmentation=augmentation,
+        sparsh_temporal_stride=data.get("sparsh_temporal_stride", 0),
         exclude_phantoms=data.get("exclude_phantoms"),
         exclude_run_regex=data.get("exclude_run_regex"),
         include_run_regex=data.get("include_run_regex"),

@@ -1,15 +1,15 @@
-# Spatial model - Combined (image + force)
-# Full model with both modalities
+# Sparsh temporal tokenization — Image only (no force)
+# 6-channel input: img_t (subtracted) + img_{t-stride} (subtracted) → Sparsh ViT → classifier
 
 experiment:
-  name: "spatial_combined"
+  name: "sparsh_temporal_image_only"
   project: "TendonClassifier"
   seed: 42
 
 model:
   type: "spatial"
   encoder:
-    name: "resnet18"
+    name: "sparsh_vitb16"
     pretrained: true
     freeze: true
   fusion:
@@ -19,27 +19,28 @@ model:
     num_layers: 1
     dropout: 0.1
   num_classes: 4
-  use_force: true  # Combined: image + force
-  use_depth_head: false  # Spatial models focus on classification only
+  use_force: false
+  use_depth_head: false
 
 data:
   manifest: "../labeling/output/gt_dataset/gt_manifest.csv"
   img_size: 224
-  include_run_regex: "traverse"
+  include_run_regex: "traverse|p1_t_0_str"
+  sparsh_temporal_stride: 3
   normalization:
-    type: "imagenet"
-    mean: [0.485, 0.456, 0.406]
-    std: [0.229, 0.224, 0.225]
+    type: "none"
   subtraction:
-    enabled: false
+    enabled: true
+    reference: "first_frame"
+    type: "sparsh"
   augmentation:
     enabled: false
 
 training:
   epochs: 40
-  batch_size: 32
-  lr: 0.0001
-  weight_decay: 0.0001
+  batch_size: 16
+  lr: 4.36e-5
+  weight_decay: 3.33e-4
   optimizer: "adam"
   scheduler:
     type: "cosine"
@@ -61,7 +62,7 @@ checkpoint:
 logging:
   wandb:
     enabled: true
-    tags: ["spatial", "combined", "image+force", "token_self_attention"]
+    tags: ["sparsh", "temporal_tokenization", "image_only", "6ch"]
   csv:
     enabled: true
   print_every: 1

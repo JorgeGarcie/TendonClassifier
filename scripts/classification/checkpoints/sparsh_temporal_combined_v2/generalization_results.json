@@ -1,0 +1,75 @@
+{
+  "checkpoint": "checkpoints/sparsh_temporal_combined_v2/best.pth",
+  "eval_regex": "p1_t_0_str",
+  "overall": {
+    "n_samples": 298,
+    "accuracy": 0.8993288590604027,
+    "macro_f1": 0.23674911660777384,
+    "per_class": {
+      "none": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0
+      },
+      "single": {
+        "precision": 1.0,
+        "recall": 0.8993288590604027,
+        "f1": 0.9469964664310954,
+        "support": 298
+      },
+      "crossed": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0
+      },
+      "double": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0
+      }
+    }
+  },
+  "per_phantom": {
+    "p1": {
+      "n_samples": 298,
+      "accuracy": 0.8993288590604027,
+      "macro_f1": 0.23674911660777384,
+      "per_class": {
+        "none": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 0
+        },
+        "single": {
+          "precision": 1.0,
+          "recall": 0.8993288590604027,
+          "f1": 0.9469964664310954,
+          "support": 298
+        },
+        "crossed": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 0
+        },
+        "double": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 0
+        }
+      }
+    }
+  },
+  "per_run": {
+    "p1_t_0_str-2026-02-04_15.28.12": {
+      "n_samples": 298,
+      "accuracy": 0.8993288590604027,
+      "macro_f1": 0.23674911660777384
+    }
+  }
+}

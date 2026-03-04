@@ -19,6 +19,7 @@ CAMERA = {
 
 # Processing params
 FORCE_THRESHOLD_N = 12.0  # hysteresis threshold
+CROP_SIZE = 1080          # center crop size (pixels) applied before saving images
 KEYFRAME_INTERVAL = 10    # annotate centerline every N frames
 FRAME_SAMPLING = {
     "mode": "every_n",    # "every_n" or "uniform_m"

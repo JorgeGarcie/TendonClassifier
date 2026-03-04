@@ -144,6 +144,9 @@ Key findings from Run 2:
 4. **Improve double class** — collect more p5_double_traverse data, or try augmentation (rotation/flip) on existing double frames
 5. **Export best model** — copy `best.pth` + config to inference directory
 
+### Spatial tactile backbone (needs server)
+Train DINOv2 with DINO self-supervision on Sparsh's open tactile datasets (~460K images, 3-channel single-frame). This creates a fair spatial comparison against our current ImageNet ResNet-18 without changing from spatial to temporal mode. Estimated ~1-2 days GPU time on RTX 3090. See `EXPERIMENT_LOG.md` "Experiment A" for details.
+
 ---
 
 ## Deployment Spec (Needs Updating)

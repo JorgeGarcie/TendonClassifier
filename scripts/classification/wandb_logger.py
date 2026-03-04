@@ -27,6 +27,7 @@ class WandbLogger:
         tags: Optional[list] = None,
         notes: Optional[str] = None,
         save_code: bool = True,
+        sweep_mode: bool = False,
     ):
         """Initialize wandb logger.
 
@@ -39,6 +40,8 @@ class WandbLogger:
             tags: List of tags for the run
             notes: Notes for the run
             save_code: Whether to save code to wandb
+            sweep_mode: If True, attach to existing wandb.run (already
+                        initialized by sweep agent) instead of calling init()
         """
         self.enabled = enabled
         self._run = None
@@ -53,6 +56,20 @@ class WandbLogger:
         except ImportError:
             print("WandbLogger: wandb not installed, logging locally only")
             self.enabled = False
+            return
+
+        if sweep_mode:
+            # Sweep agent already called wandb.init(); just attach
+            self._run = wandb.run
+            if self._run is None:
+                print("WandbLogger: sweep_mode=True but no active wandb.run")
+                self.enabled = False
+                return
+            # Push full config so sweep runs show all settings
+            if config:
+                wandb.config.update(config, allow_val_change=True)
+            print(f"WandbLogger: Attached to sweep run '{self._run.name}'")
+            print(f"  URL: {self._run.url}")
             return
 
         # Initialize wandb
@@ -236,11 +253,12 @@ class WandbLogger:
         self.finish()
 
 
-def create_logger(config) -> WandbLogger:
+def create_logger(config, sweep_mode: bool = False) -> WandbLogger:
     """Create a WandbLogger from config.
 
     Args:
         config: Config dataclass or dict
+        sweep_mode: If True, attach to existing wandb.run (sweep agent)
 
     Returns:
         WandbLogger instance
@@ -280,4 +298,5 @@ def create_logger(config) -> WandbLogger:
         entity=entity,
         tags=tags,
         notes=notes,
+        sweep_mode=sweep_mode,
     )

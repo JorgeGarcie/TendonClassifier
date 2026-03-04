@@ -21,13 +21,14 @@ import random
 from pathlib import Path
 
 import numpy as np
+import yaml
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import classification_report, confusion_matrix, f1_score
 from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
 
-from config import load_config, config_to_dict
+from config import load_config, load_config_from_dict, config_to_dict
 from dataset import TendonDatasetV2
 from models_v2 import get_model_v2, count_parameters, verify_frozen_encoder
 from wandb_logger import create_logger
@@ -50,6 +51,47 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def apply_overrides(yaml_dict: dict, overrides: list) -> dict:
+    """Apply dotted key=value overrides to a raw YAML dict.
+
+    Args:
+        yaml_dict: Nested dict from yaml.safe_load
+        overrides: List of "dotted.key=value" strings
+
+    Returns:
+        Modified yaml_dict (in-place)
+    """
+    for override in overrides:
+        if "=" not in override:
+            raise ValueError(f"Invalid override (missing '='): {override}")
+        key, value = override.split("=", 1)
+        parts = key.split(".")
+
+        # Auto-coerce types
+        if value.lower() == "true":
+            value = True
+        elif value.lower() == "false":
+            value = False
+        else:
+            try:
+                value = int(value)
+            except ValueError:
+                try:
+                    value = float(value)
+                except ValueError:
+                    pass  # keep as string
+
+        # Navigate to parent dict
+        d = yaml_dict
+        for part in parts[:-1]:
+            if part not in d:
+                d[part] = {}
+            d = d[part]
+        d[parts[-1]] = value
+
+    return yaml_dict
 
 
 def split_by_run(dataset, val_ratio=0.2, seed=42):
@@ -552,13 +594,15 @@ def save_checkpoint(model, optimizer, epoch, metrics, path, config=None):
     torch.save(state, path)
 
 
-def main():
-    args = parse_args()
+def run_training(config, sweep_mode: bool = False):
+    """Run the full training pipeline.
 
-    # Load config
-    config = load_config(args.config)
-    print(f"Loaded config from: {args.config}")
-
+    Args:
+        config: Config dataclass with all settings.
+        sweep_mode: If True, use sweep-friendly defaults:
+            - Checkpoint dir under checkpoints/sweep/{wandb.run.id}
+            - Skip CSV logging, learning curve PNGs, periodic checkpoints
+    """
     # Set seed
     set_seed(config.experiment.seed)
 
@@ -566,7 +610,7 @@ def main():
     device = get_device()
 
     # Initialize wandb logger
-    logger = create_logger(config)
+    logger = create_logger(config, sweep_mode=sweep_mode)
 
     # Dataset
     # Determine if we need temporal mode
@@ -583,12 +627,14 @@ def main():
         exclude_run_regex=config.data.exclude_run_regex,
         include_run_regex=config.data.include_run_regex,
         normalization=config.data.normalization.type,
-        norm_mean=config.data.normalization.mean,
-        norm_std=config.data.normalization.std,
+        norm_mean=config.data.normalization.mean if config.data.normalization.type != "none" else None,
+        norm_std=config.data.normalization.std if config.data.normalization.type != "none" else None,
         temporal_frames=temporal_frames,
         subtraction_enabled=config.data.subtraction.enabled,
         subtraction_reference=config.data.subtraction.reference,
+        subtraction_type=config.data.subtraction.type,
         return_force_sequence=return_force_sequence,
+        sparsh_temporal_stride=config.data.sparsh_temporal_stride,
         augmentation={
             "enabled": config.data.augmentation.enabled,
             "horizontal_flip": config.data.augmentation.horizontal_flip,
@@ -706,13 +752,18 @@ def main():
         )
 
     # Checkpoint directory
-    ckpt_dir = Path(__file__).parent / config.checkpoint.dir / config.experiment.name
+    if sweep_mode:
+        import wandb
+        ckpt_dir = Path(__file__).parent / config.checkpoint.dir / "sweep" / wandb.run.id
+    else:
+        ckpt_dir = Path(__file__).parent / config.checkpoint.dir / config.experiment.name
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     print(f"Checkpoints: {ckpt_dir}")
 
-    # CSV logging
+    # CSV logging (skip in sweep mode)
+    csv_enabled = not sweep_mode and config.logging.csv.get("enabled", True)
     csv_path = ckpt_dir / "training_log.csv"
-    if config.logging.csv.get("enabled", True):
+    if csv_enabled:
         with open(csv_path, "w", newline="") as f:
             csv.writer(f).writerow([
                 "epoch", "train_loss", "train_cls_loss", "train_depth_loss",
@@ -780,7 +831,7 @@ def main():
         logger.log_epoch(epoch, train_metrics, val_metrics, lr=current_lr)
 
         # CSV logging
-        if config.logging.csv.get("enabled", True):
+        if csv_enabled:
             with open(csv_path, "a", newline="") as f:
                 csv.writer(f).writerow([
                     epoch + 1,
@@ -799,8 +850,8 @@ def main():
             save_checkpoint(model, optimizer, epoch, metrics, ckpt_dir / "best.pth", config)
             print(f"  New best model saved (val_macro_f1={best_val_macro_f1:.4f})")
 
-        # Save every N epochs
-        if config.checkpoint.save_every_n_epochs > 0:
+        # Save every N epochs (skip in sweep mode)
+        if not sweep_mode and config.checkpoint.save_every_n_epochs > 0:
             if (epoch + 1) % config.checkpoint.save_every_n_epochs == 0:
                 save_checkpoint(
                     model, optimizer, epoch, metrics,
@@ -811,17 +862,18 @@ def main():
         if config.checkpoint.save_last:
             save_checkpoint(model, optimizer, epoch, metrics, ckpt_dir / "last.pth", config)
 
-    # Save learning curves
-    save_learning_curve(
-        {"train_loss": history["train_loss"], "val_loss": history["val_loss"],
-         "train_acc": history["train_acc"], "val_acc": history["val_acc"]},
-        filename=f"{config.experiment.name}_learning_curve.png",
-    )
-    save_learning_curve(
-        {"train_depth_mae": history["train_depth_mae"],
-         "val_depth_mae": history["val_depth_mae"]},
-        filename=f"{config.experiment.name}_depth_curve.png",
-    )
+    # Save learning curves (skip in sweep mode)
+    if not sweep_mode:
+        save_learning_curve(
+            {"train_loss": history["train_loss"], "val_loss": history["val_loss"],
+             "train_acc": history["train_acc"], "val_acc": history["val_acc"]},
+            filename=f"{config.experiment.name}_learning_curve.png",
+        )
+        save_learning_curve(
+            {"train_depth_mae": history["train_depth_mae"],
+             "val_depth_mae": history["val_depth_mae"]},
+            filename=f"{config.experiment.name}_depth_curve.png",
+        )
 
     # Final evaluation with best model
     print("\n--- Final Evaluation (Best Model) ---")
@@ -905,6 +957,23 @@ def main():
     print(f"\nTraining complete!")
     print(f"  Best val macro-F1: {best_val_macro_f1:.4f}")
     print(f"  Checkpoints saved to: {ckpt_dir}")
+
+
+def main():
+    args = parse_args()
+
+    # Load config as raw dict, apply overrides, then convert to dataclass
+    with open(args.config) as f:
+        yaml_dict = yaml.safe_load(f)
+
+    if args.override:
+        apply_overrides(yaml_dict, args.override)
+        print(f"Applied {len(args.override)} override(s)")
+
+    config = load_config_from_dict(yaml_dict)
+    print(f"Loaded config from: {args.config}")
+
+    run_training(config)
 
 
 if __name__ == "__main__":

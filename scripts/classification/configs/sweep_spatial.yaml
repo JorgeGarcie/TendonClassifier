@@ -1,32 +1,24 @@
-# Wandb Sweep Configuration for Spatial Models
+# Wandb Sweep Configuration for Spatial Combined (token_self_attention)
 # Usage:
 #   wandb sweep configs/sweep_spatial.yaml
-#   wandb agent <sweep_id>
+#   wandb agent <entity>/<project>/<sweep_id>
 
 program: train_sweep.py
-method: bayes  # bayes | grid | random
+method: bayes
+
+command:
+  - ${env}
+  - /home/aquabot/miniforge3/envs/VISIONFT/bin/python
+  - ${program}
+  - --base-config
+  - configs/spatial_combined.yaml
+
 metric:
-  name: val/acc
+  name: val/macro_f1
   goal: maximize
 
 parameters:
-  # Model configuration
-  model_type:
-    values: ["spatial", "spatial_force"]
-
-  encoder_name:
-    values: ["resnet18", "dinov2_small"]
-
-  use_force:
-    values: [true, false]
-
-  fusion_type:
-    values: ["concat", "attention"]
-
-  fusion_hidden_dim:
-    values: [64, 128, 256]
-
-  # Training configuration
+  # Training hyperparameters
   lr:
     distribution: log_uniform_values
     min: 0.00001
@@ -35,24 +27,34 @@ parameters:
   batch_size:
     values: [16, 32, 64]
 
-  optimizer:
-    values: ["adam", "adamw"]
-
   weight_decay:
     distribution: log_uniform_values
     min: 0.00001
     max: 0.01
 
-  # Loss configuration
-  depth_weight:
-    values: [0.0, 0.1, 0.5]
+  optimizer:
+    values: ["adam", "adamw"]
+
+  # Fusion architecture
+  fusion_hidden_dim:
+    values: [64, 128, 256]
+
+  fusion_num_heads:
+    values: [2, 4, 8]
+
+  fusion_num_layers:
+    values: [1, 2]
+
+  # Data preprocessing
+  subtraction_enabled:
+    values: [true, false]
 
   # Fixed parameters
   epochs:
-    value: 50  # Shorter for HP search
+    value: 40
 
-  seed:
-    value: 42
+  fusion_type:
+    value: "token_self_attention"
 
 # Early terminate poorly performing runs
 early_terminate:

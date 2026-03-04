@@ -1,0 +1,34 @@
+{
+  "checkpoint": "checkpoints/spatial_image_only/best.pth",
+  "test_dir": "/home/aquabot/VisionFT/TendonClassifier/TendonClassifier/scripts/classification/test_frames",
+  "subtraction": false,
+  "n_samples": 1001,
+  "accuracy": 0.4245754245754246,
+  "macro_f1": 0.41792859733679216,
+  "per_class": {
+    "none": {
+      "precision": 0.9097744360902256,
+      "recall": 0.4820717131474104,
+      "f1": 0.6302083333333334,
+      "support": 251
+    },
+    "single": {
+      "precision": 0.25895316804407714,
+      "recall": 0.376,
+      "f1": 0.3066884176182708,
+      "support": 250
+    },
+    "crossing": {
+      "precision": 0.375,
+      "recall": 0.696,
+      "f1": 0.48739495798319327,
+      "support": 250
+    },
+    "double": {
+      "precision": 0.8780487804878049,
+      "recall": 0.144,
+      "f1": 0.24742268041237114,
+      "support": 250
+    }
+  }
+}

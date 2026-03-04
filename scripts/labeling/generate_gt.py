@@ -3,11 +3,13 @@
 For each run/frame, looks up the precomputed GT grid using the TCP position,
 reads the full 6-axis wrench, and produces images + a manifest CSV.
 
+Images are center-cropped to CROP_SIZE x CROP_SIZE (defined in config.py)
+before saving. This replaces the old --image-size resize approach.
+
 Usage:
     python generate_gt.py                                  # all runs
     python generate_gt.py --run-id p1_n2t_25N-...          # specific run
     python generate_gt.py --stride 5                       # every 5th frame
-    python generate_gt.py --image-size 540x960             # resize images
 """
 
 import argparse
@@ -115,6 +117,22 @@ def interpolate_wrench(frame_time, wrench_times, wrench_arrays):
 # Main processing
 # ---------------------------------------------------------------------------
 
+def center_crop(img: np.ndarray, size: int) -> np.ndarray:
+    """Center crop an image to size x size pixels.
+
+    If the image is smaller than size in either dimension, the full
+    image is returned without padding.
+    """
+    h, w = img.shape[:2]
+    cy, cx = h // 2, w // 2
+    half = size // 2
+    y1 = max(0, cy - half)
+    y2 = min(h, cy + half)
+    x1 = max(0, cx - half)
+    x2 = min(w, cx + half)
+    return img[y1:y2, x1:x2]
+
+
 def load_phantom_configs():
     """Load phantom_configs.json."""
     cfg_path = Path(config.CONFIGS_ROOT) / config.PHANTOM_CONFIGS_FILE
@@ -122,8 +140,83 @@ def load_phantom_configs():
         return json.load(f)
 
 
+def wrench_by_index(frame_i, n_frames, wrench_rows):
+    """Get wrench components for frame i by proportional index (no timestamps)."""
+    n_wr = len(wrench_rows)
+    idx = min(int(round(frame_i * n_wr / n_frames)), n_wr - 1)
+    row = wrench_rows[idx]
+    return {col: float(row[col]) for col in ["fx", "fy", "fz", "tx", "ty", "tz"]}
+
+
+def process_run_forced(run, meta, output_root):
+    """Process a forced-label run (no GT grid, index-based wrench, fixed tendon_type)."""
+    run_id = run["run_id"]
+    phantom_type = run["phantom_type"]
+    run_path = Path(run.get("path", config.DATA_ROOT) or config.DATA_ROOT)
+    forced_label = meta["forced_label"]
+    presence = int(forced_label > 0)
+
+    logger.info(f"Processing forced-label run: {run_id} (label={forced_label})")
+
+    wrench_path = run_path / "wrench_data.csv"
+    if not wrench_path.exists():
+        logger.warning(f"Missing wrench_data.csv for {run_id}")
+        return []
+
+    wrench_data = pd.read_csv(wrench_path)
+    wrench_sensor = wrench_data[wrench_data["sensor"] == config.WRENCH_SENSOR]
+    wrench_rows = wrench_sensor.reset_index(drop=True).to_dict("records")
+
+    images_dir = Path(output_root) / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    frames = run["frames"]
+    n_frames = len(frames)
+    manifest_rows = []
+
+    for i, frame in enumerate(frames):
+        frame_idx = frame["frame_idx"]
+        image_path = run_path / frame["image_path"]
+        if not image_path.exists():
+            logger.warning(f"Image not found: {image_path}")
+            continue
+
+        img = cv2.imread(str(image_path))
+        if img is None:
+            logger.warning(f"Failed to load image: {image_path}")
+            continue
+
+        img_cropped = center_crop(img, config.CROP_SIZE)
+        img_filename = f"{run_id}_frame_{frame_idx:05d}.jpg"
+        cv2.imwrite(str(images_dir / img_filename), img_cropped)
+
+        w = wrench_by_index(i, n_frames, wrench_rows)
+        fx, fy, fz = w["fx"], w["fy"], w["fz"]
+        tx, ty, tz = w["tx"], w["ty"], w["tz"]
+        force_magnitude = float(np.sqrt(fx**2 + fy**2 + fz**2))
+
+        manifest_rows.append({
+            "run_id": run_id,
+            "phantom_type": phantom_type,
+            "frame_idx": frame_idx,
+            "timestamp": float(i),
+            "image_path": f"images/{img_filename}",
+            "presence": presence,
+            "depth_mm": "",
+            "tendon_type": forced_label,
+            "gx": 0.0,
+            "gy": 0.05,   # safely outside 3mm boundary-exclusion zone
+            "force_magnitude": force_magnitude,
+            "fx": fx, "fy": fy, "fz": fz,
+            "tx": tx, "ty": ty, "tz": tz,
+        })
+
+    logger.info(f"  Processed {len(manifest_rows)} frames for {run_id}")
+    return manifest_rows
+
+
 def process_run(run, run_metadata, phantom_cfgs, gt_grids,
-                output_root, stride, image_size):
+                output_root, stride):
     """Process all frames for one run, return manifest rows."""
     run_id = run["run_id"]
     phantom_type = run["phantom_type"]
@@ -136,6 +229,10 @@ def process_run(run, run_metadata, phantom_cfgs, gt_grids,
     if meta is None:
         logger.warning(f"No metadata for run {run_id}, skipping")
         return []
+
+    # Forced-label runs: skip GT grid, use index-based wrench lookup
+    if meta.get("forced_label") is not None:
+        return process_run_forced(run, meta, output_root)
 
     motion_type = meta["motion_type"]
     rotation_deg = meta.get("rotation_deg", 0)
@@ -217,19 +314,16 @@ def process_run(run, run_metadata, phantom_cfgs, gt_grids,
         # Look up GT
         presence, depth_mm, tendon_type = grid.lookup(gx, gy)
 
-        # Copy/resize image
+        # Center crop image
         img_filename = f"{run_id}_frame_{frame_idx:05d}.jpg"
         img_output_path = images_dir / img_filename
 
-        if image_size is not None:
-            img = cv2.imread(str(image_path))
-            if img is None:
-                logger.warning(f"Failed to load image: {image_path}")
-                continue
-            img_resized = cv2.resize(img, image_size, interpolation=cv2.INTER_AREA)
-            cv2.imwrite(str(img_output_path), img_resized)
-        else:
-            shutil.copy2(str(image_path), str(img_output_path))
+        img = cv2.imread(str(image_path))
+        if img is None:
+            logger.warning(f"Failed to load image: {image_path}")
+            continue
+        img_cropped = center_crop(img, config.CROP_SIZE)
+        cv2.imwrite(str(img_output_path), img_cropped)
 
         manifest_rows.append({
             "run_id": run_id,
@@ -240,6 +334,8 @@ def process_run(run, run_metadata, phantom_cfgs, gt_grids,
             "presence": presence,
             "depth_mm": depth_mm if presence else "",
             "tendon_type": tendon_type,
+            "gx": gx,
+            "gy": gy,
             "force_magnitude": force_magnitude,
             "fx": fx,
             "fy": fy,
@@ -261,17 +357,7 @@ def main():
                         help="Process only this run_id")
     parser.add_argument("--stride", type=int, default=1,
                         help="Take every Nth frame (default: 1)")
-    parser.add_argument("--image-size", type=str, default=None,
-                        help="Resize images to WxH (e.g. 540x960)")
     args = parser.parse_args()
-
-    # Parse image size
-    image_size = None
-    if args.image_size:
-        parts = args.image_size.split("x")
-        if len(parts) != 2:
-            parser.error("--image-size must be WxH (e.g. 540x960)")
-        image_size = (int(parts[0]), int(parts[1]))
 
     # Load configs
     valid_frames_path = Path(config.CONFIGS_ROOT) / "valid_frames.json"
@@ -301,6 +387,7 @@ def main():
             "motion_type": run_info.get("motion_type"),
             "stl_file": run_info.get("stl_file"),
             "rotation_deg": run_info.get("rotation_deg", 0),
+            "forced_label": run_info.get("forced_label"),  # None for normal runs
         }
 
     # Load phantom configs
@@ -333,7 +420,7 @@ def main():
 
         rows = process_run(
             run, run_metadata, phantom_cfgs, gt_grids,
-            str(output_root), args.stride, image_size
+            str(output_root), args.stride
         )
         all_manifest_rows.extend(rows)
 
@@ -343,6 +430,7 @@ def main():
         fieldnames = [
             "run_id", "phantom_type", "frame_idx", "timestamp",
             "image_path", "presence", "depth_mm", "tendon_type",
+            "gx", "gy",
             "force_magnitude", "fx", "fy", "fz", "tx", "ty", "tz",
         ]
 
