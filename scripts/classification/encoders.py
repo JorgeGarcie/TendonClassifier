@@ -27,6 +27,7 @@ ENCODER_DIMS = {
     "clip_vit_b32": 512,
     "clip_vit_l14": 768,
     "sparsh_vitb16": 768,
+    "sparsh_vitb14_3ch": 768,
 }
 
 
@@ -238,6 +239,71 @@ class SparshEncoder(nn.Module):
         return patch_tokens.mean(dim=1)  # (B, 768)
 
 
+class SparshSpatialEncoder(nn.Module):
+    """Sparsh ViT-B/14 encoder for 3-channel single-frame input.
+
+    Trained with DINOv2 SSL on ~385K tactile frames (same data as Sparsh,
+    but 3ch single frames instead of 6ch temporal pairs).
+    """
+
+    WEIGHTS_PATH = "checkpoints/sparsh/dinov2_vitb14_3ch.safetensors"
+
+    def __init__(self, freeze: bool = True):
+        super().__init__()
+        from sparsh_vit import vit_base
+        self.name = "sparsh_vitb14_3ch"
+        self.output_dim = ENCODER_DIMS[self.name]
+
+        self.backbone = vit_base(
+            patch_size=14, in_chans=3, img_size=224,
+            pos_embed_fn="sinusoidal", num_register_tokens=1,
+        )
+        self._load_weights()
+        if freeze:
+            self._freeze()
+
+    def _load_weights(self):
+        from safetensors.torch import load_file
+        from pathlib import Path
+
+        weights_path = Path(__file__).parent / self.WEIGHTS_PATH
+        if not weights_path.exists():
+            raise FileNotFoundError(
+                f"Sparsh 3ch weights not found at {weights_path}. "
+                "Transfer from BDML-server: scp jorge@BDML-server.stanford.edu:"
+                "/home/jorge/VisionFT/checkpoints/dinov2_vitb14_3ch.safetensors "
+                "checkpoints/sparsh/"
+            )
+        state_dict = load_file(str(weights_path))
+        cleaned = {}
+        for k, v in state_dict.items():
+            k = k.replace("teacher.backbone.", "").replace("teacher.", "")
+            cleaned[k] = v
+
+        msg = self.backbone.load_state_dict(cleaned, strict=False)
+        if msg.missing_keys:
+            print(f"Sparsh 3ch: missing keys (expected for sinusoidal pos_embed): "
+                  f"{msg.missing_keys}")
+        if msg.unexpected_keys:
+            print(f"Sparsh 3ch: unexpected keys (ignored): {msg.unexpected_keys}")
+
+    def _freeze(self):
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x: Input tensor of shape (B, 3, H, W) — single subtracted frame
+
+        Returns:
+            Feature tensor of shape (B, 768) — mean-pooled patch tokens
+        """
+        patch_tokens = self.backbone(x)  # (B, N, 768)
+        return patch_tokens.mean(dim=1)  # (B, 768)
+
+
 def get_encoder(name: str, pretrained: bool = True,
                 freeze: bool = True) -> nn.Module:
     """Factory function to create vision encoders.
@@ -261,6 +327,8 @@ def get_encoder(name: str, pretrained: bool = True,
         return CLIPEncoder(name, freeze)
     elif name == "sparsh_vitb16":
         return SparshEncoder(freeze=freeze)
+    elif name == "sparsh_vitb14_3ch":
+        return SparshSpatialEncoder(freeze=freeze)
     else:
         raise ValueError(
             f"Unknown encoder: {name}. "
