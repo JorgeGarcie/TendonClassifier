@@ -32,7 +32,7 @@ class TemporalConfig:
 
 @dataclass
 class FusionConfig:
-    type: str = "attention"  # concat | attention | cross_attention | token_self_attention
+    type: str = "attention"  # concat | attention | cross_attention | token_self_attention | film | patch_self_attention | patch_cross_attention
     hidden_dim: int = 128
     num_heads: int = 4
     num_layers: int = 1
@@ -41,7 +41,7 @@ class FusionConfig:
 
 @dataclass
 class ModelConfig:
-    type: str = "spatial"  # spatial | spatial_force | temporal | temporal_force
+    type: str = "spatial"  # spatial | spatial_force | temporal | temporal_force | temporal_v2 | temporal_v2_force
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     temporal: TemporalConfig = field(default_factory=TemporalConfig)
     fusion: FusionConfig = field(default_factory=FusionConfig)
@@ -90,6 +90,7 @@ class DataConfig:
     exclude_phantoms: Optional[list] = None
     exclude_run_regex: Optional[str] = None  # Regex pattern to exclude run_ids (e.g. "_nat-" for nat arc runs)
     include_run_regex: Optional[str] = None  # Regex pattern to include only matching run_ids
+    force_window_path: str = ""  # Path to precomputed force windows .npy (for temporal_v2)
 
 
 @dataclass
@@ -277,6 +278,7 @@ def _build_data_config(data: dict) -> DataConfig:
         exclude_phantoms=data.get("exclude_phantoms"),
         exclude_run_regex=data.get("exclude_run_regex"),
         include_run_regex=data.get("include_run_regex"),
+        force_window_path=data.get("force_window_path", ""),
     )
 
 

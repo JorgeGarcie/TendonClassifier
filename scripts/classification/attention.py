@@ -449,9 +449,146 @@ class LSTMAggregator(nn.Module):
         return self.out_proj(h_n)
 
 
+class FiLMFusion(nn.Module):
+    """Feature-wise Linear Modulation fusion.
+
+    Force features generate scale (gamma) and shift (beta) parameters
+    that modulate the pooled image vector: gamma * image + beta.
+    """
+
+    def __init__(self, image_dim: int, force_dim: int, hidden_dim: int = 128,
+                 dropout: float = 0.1):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+
+        # Force -> (gamma, beta) for image modulation
+        self.film_gen = nn.Linear(force_dim, image_dim * 2)
+        self.proj = nn.Sequential(
+            nn.Linear(image_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, image_feat: torch.Tensor,
+                force_feat: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            image_feat: Pooled image features (B, D_img)
+            force_feat: Force features (B, D_force)
+
+        Returns:
+            Fused features (B, hidden_dim)
+        """
+        film_params = self.film_gen(force_feat)  # (B, D_img * 2)
+        gamma, beta = film_params.chunk(2, dim=-1)  # each (B, D_img)
+        modulated = gamma * image_feat + beta  # (B, D_img)
+        return self.proj(modulated)  # (B, hidden_dim)
+
+
+class PatchSelfAttentionFusion(nn.Module):
+    """Self-attention over 196 image patches + 1 force token.
+
+    Projects force to patch dim, adds modality embeddings, concatenates
+    with image patches -> 197 tokens. Runs 1-layer TransformerEncoder.
+    Reads out the force token (position 0).
+    """
+
+    def __init__(self, patch_dim: int, force_dim: int, hidden_dim: int = 128,
+                 num_heads: int = 4, num_layers: int = 1, dropout: float = 0.1):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.patch_dim = patch_dim
+
+        self.force_proj = nn.Linear(force_dim, patch_dim)
+        self.modality_embed = nn.Embedding(2, patch_dim)  # 0=force, 1=image
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=patch_dim,
+            nhead=num_heads,
+            dim_feedforward=patch_dim * 4,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.out_proj = nn.Linear(patch_dim, hidden_dim)
+
+    def forward(self, image_patches: torch.Tensor,
+                force_feat: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            image_patches: (B, N, patch_dim) — unpooled patch tokens
+            force_feat: (B, force_dim)
+
+        Returns:
+            Fused features (B, hidden_dim)
+        """
+        B = force_feat.size(0)
+        device = force_feat.device
+
+        force_token = self.force_proj(force_feat).unsqueeze(1)  # (B, 1, D)
+
+        # Add modality embeddings
+        force_idx = torch.zeros(1, dtype=torch.long, device=device)
+        image_idx = torch.ones(1, dtype=torch.long, device=device)
+        force_token = force_token + self.modality_embed(force_idx)
+        image_patches = image_patches + self.modality_embed(image_idx)
+
+        tokens = torch.cat([force_token, image_patches], dim=1)  # (B, N+1, D)
+        out = self.transformer(tokens)  # (B, N+1, D)
+        return self.out_proj(out[:, 0, :])  # (B, hidden_dim) — force token readout
+
+
+class PatchCrossAttentionFusion(nn.Module):
+    """Cross-attention: force queries over image patch keys/values.
+
+    Force feature projected to patch dim as single query.
+    196 image patches as K/V. nn.MultiheadAttention.
+    """
+
+    def __init__(self, patch_dim: int, force_dim: int, hidden_dim: int = 128,
+                 num_heads: int = 4, dropout: float = 0.1):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.patch_dim = patch_dim
+
+        self.force_proj = nn.Linear(force_dim, patch_dim)
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=patch_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.layer_norm = nn.LayerNorm(patch_dim)
+        self.out_proj = nn.Sequential(
+            nn.Linear(patch_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, image_patches: torch.Tensor,
+                force_feat: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            image_patches: (B, N, patch_dim) — unpooled patch tokens
+            force_feat: (B, force_dim)
+
+        Returns:
+            Fused features (B, hidden_dim)
+        """
+        query = self.force_proj(force_feat).unsqueeze(1)  # (B, 1, D)
+        attn_out, _ = self.cross_attn(query, image_patches, image_patches)  # (B, 1, D)
+        attn_out = self.layer_norm(query + attn_out)  # residual
+        return self.out_proj(attn_out.squeeze(1))  # (B, hidden_dim)
+
+
 def get_fusion_module(fusion_type: str, image_dim: int, force_dim: int,
                       hidden_dim: int = 128, num_heads: int = 4,
-                      num_layers: int = 1, dropout: float = 0.1) -> nn.Module:
+                      num_layers: int = 1, dropout: float = 0.1,
+                      patch_dim: int = 0) -> nn.Module:
     """Factory for fusion modules.
 
     Args:
@@ -474,6 +611,20 @@ def get_fusion_module(fusion_type: str, image_dim: int, force_dim: int,
         return TokenSelfAttentionFusion(
             image_dim, force_dim, hidden_dim,
             num_heads=num_heads, num_layers=num_layers, dropout=dropout,
+        )
+    elif fusion_type == "film":
+        return FiLMFusion(image_dim, force_dim, hidden_dim, dropout=dropout)
+    elif fusion_type == "patch_self_attention":
+        assert patch_dim > 0, "patch_dim required for patch_self_attention fusion"
+        return PatchSelfAttentionFusion(
+            patch_dim, force_dim, hidden_dim,
+            num_heads=num_heads, num_layers=num_layers, dropout=dropout,
+        )
+    elif fusion_type == "patch_cross_attention":
+        assert patch_dim > 0, "patch_dim required for patch_cross_attention fusion"
+        return PatchCrossAttentionFusion(
+            patch_dim, force_dim, hidden_dim,
+            num_heads=num_heads, dropout=dropout,
         )
     else:
         raise ValueError(f"Unknown fusion type: {fusion_type}")

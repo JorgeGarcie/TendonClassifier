@@ -81,6 +81,48 @@ class TemporalForceBranch(nn.Module):
         return out_flat.view(B, T, -1)
 
 
+class CausalConvForceEncoder(nn.Module):
+    """5-layer causal 1D convolution for force/torque temporal encoding.
+
+    Processes 32 raw wrench readings at 300Hz (~107ms context).
+    Architecture from Lee et al. "Making Sense of Vision and Touch" (ICRA 2019).
+
+    Input: (B, 32, 6) -> Output: (B, 64)
+    Sequence length: 32->16->8->4->2->1, squeeze final dim.
+    """
+
+    def __init__(self, input_channels: int = 6):
+        super().__init__()
+        self.output_dim = 64
+        channels = [input_channels, 16, 32, 64, 64, 64]
+        kernel_size = 3
+
+        layers = []
+        for i in range(5):
+            in_ch = channels[i]
+            out_ch = channels[i + 1]
+            pad = kernel_size - 1  # causal: left-pad by k-1
+            layers.append(nn.ConstantPad1d((pad, 0), 0.0))
+            layers.append(nn.Conv1d(in_ch, out_ch, kernel_size, stride=2, padding=0))
+            layers.append(nn.BatchNorm1d(out_ch))
+            layers.append(nn.ReLU())
+
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x: Force window tensor of shape (B, 32, 6)
+
+        Returns:
+            Feature tensor of shape (B, 64)
+        """
+        x = x.permute(0, 2, 1)  # (B, 6, 32)
+        x = self.net(x)  # (B, 64, 1)
+        return x.squeeze(-1)  # (B, 64)
+
+
 class ClassificationHead(nn.Module):
     """Classification and optional depth regression head."""
 
@@ -405,6 +447,122 @@ class TemporalForceModel(nn.Module):
         return self.head(agg_feat)
 
 
+class TemporalV2ForceModel(nn.Module):
+    """Temporal v2 force-only model: CausalConvForceEncoder -> ClassificationHead.
+
+    Processes 32-step force windows (300Hz) through causal convolutions.
+    No vision encoder — force/torque only.
+    """
+
+    def __init__(self, num_classes: int = 4, use_depth_head: bool = True):
+        super().__init__()
+        self.force_encoder = CausalConvForceEncoder()
+        self.head = ClassificationHead(
+            self.force_encoder.output_dim, num_classes, use_depth=use_depth_head,
+        )
+
+    def forward(self, force_window: torch.Tensor):
+        """Forward pass.
+
+        Args:
+            force_window: (B, 32, 6) raw wrench window
+
+        Returns:
+            (cls_logits, depth_pred) or cls_logits
+        """
+        feat = self.force_encoder(force_window)
+        return self.head(feat)
+
+
+class TemporalV2Model(nn.Module):
+    """Temporal v2 combined/image-only model.
+
+    Image: Sparsh ViT-B/16 (6ch, stride 3) — pooled or unpooled depending on fusion.
+    Force: CausalConvForceEncoder (32 steps, 300Hz) when use_force=True.
+    Fusion: concat/film (pooled image) or patch_self_attention/patch_cross_attention (unpooled).
+    """
+
+    # Fusion types that need unpooled (B, N, D) patch tokens
+    PATCH_FUSIONS = {"patch_self_attention", "patch_cross_attention"}
+
+    def __init__(
+        self,
+        encoder_name: str = "sparsh_vitb16",
+        num_classes: int = 4,
+        freeze_encoder: bool = True,
+        use_force: bool = True,
+        fusion_type: str = "concat",
+        fusion_hidden_dim: int = 128,
+        use_depth_head: bool = True,
+        pretrained: bool = True,
+        fusion_num_heads: int = 4,
+        fusion_num_layers: int = 1,
+        fusion_dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.use_force = use_force
+        self.encoder_name = encoder_name
+        self.fusion_type = fusion_type
+
+        # Vision encoder — unpooled for patch-level fusions
+        needs_patches = fusion_type in self.PATCH_FUSIONS and use_force
+        self.encoder = get_encoder(
+            encoder_name, pretrained=pretrained,
+            freeze=freeze_encoder, pool=not needs_patches,
+        )
+        encoder_dim = self.encoder.output_dim  # 768
+
+        if use_force:
+            self.force_encoder = CausalConvForceEncoder()
+            force_dim = self.force_encoder.output_dim  # 64
+
+            self.fusion = get_fusion_module(
+                fusion_type, encoder_dim, force_dim, fusion_hidden_dim,
+                num_heads=fusion_num_heads, num_layers=fusion_num_layers,
+                dropout=fusion_dropout, patch_dim=encoder_dim if needs_patches else 0,
+            )
+            head_input_dim = fusion_hidden_dim
+        else:
+            self.proj = nn.Sequential(
+                nn.Linear(encoder_dim, fusion_hidden_dim),
+                nn.ReLU(),
+            )
+            head_input_dim = fusion_hidden_dim
+
+        self.head = ClassificationHead(
+            head_input_dim, num_classes, use_depth=use_depth_head,
+        )
+
+    def forward(self, image: torch.Tensor, force_window: torch.Tensor = None):
+        """Forward pass.
+
+        Args:
+            image: (B, 6, H, W) — Sparsh 6ch temporal pair
+            force_window: (B, 32, 6) — raw wrench window (when use_force)
+
+        Returns:
+            (cls_logits, depth_pred) or cls_logits
+        """
+        img_feat = self.encoder(image)  # (B, 768) or (B, N, 768)
+
+        if self.use_force and force_window is not None:
+            force_feat = self.force_encoder(force_window)  # (B, 64)
+
+            if self.fusion_type in self.PATCH_FUSIONS:
+                # Patch-level fusion: img_feat is (B, N, 768)
+                fused = self.fusion(img_feat, force_feat)
+            else:
+                # Pooled fusion (concat/film): img_feat is (B, 768)
+                fused = self.fusion(img_feat, force_feat)
+        else:
+            # Image-only: pool if not already pooled
+            if img_feat.dim() == 3:
+                img_feat = img_feat.mean(dim=1)
+            fused = self.proj(img_feat)
+
+        return self.head(fused)
+
+
 def get_model_v2(config) -> nn.Module:
     """Factory function to create models from config.
 
@@ -496,6 +654,25 @@ def get_model_v2(config) -> nn.Module:
             num_frames=num_frames,
             aggregation=aggregation,
             force_hidden_dim=fusion_hidden_dim,
+            use_depth_head=use_depth_head,
+        )
+    elif model_type == "temporal_v2":
+        return TemporalV2Model(
+            encoder_name=encoder_name,
+            num_classes=num_classes,
+            freeze_encoder=freeze_encoder,
+            use_force=use_force,
+            fusion_type=fusion_type,
+            fusion_hidden_dim=fusion_hidden_dim,
+            use_depth_head=use_depth_head,
+            pretrained=pretrained,
+            fusion_num_heads=fusion_num_heads,
+            fusion_num_layers=fusion_num_layers,
+            fusion_dropout=fusion_dropout,
+        )
+    elif model_type == "temporal_v2_force":
+        return TemporalV2ForceModel(
+            num_classes=num_classes,
             use_depth_head=use_depth_head,
         )
     else:

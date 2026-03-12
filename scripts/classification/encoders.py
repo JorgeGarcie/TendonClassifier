@@ -177,11 +177,12 @@ class SparshEncoder(nn.Module):
 
     WEIGHTS_PATH = "checkpoints/sparsh/dinov2_vitbase.safetensors"
 
-    def __init__(self, freeze: bool = True):
+    def __init__(self, freeze: bool = True, pool: bool = True):
         super().__init__()
         from sparsh_vit import vit_base
         self.name = "sparsh_vitb16"
         self.output_dim = ENCODER_DIMS[self.name]
+        self.pool = pool
 
         self.backbone = vit_base(
             patch_size=16, in_chans=6, img_size=224,
@@ -233,10 +234,13 @@ class SparshEncoder(nn.Module):
             x: Input tensor of shape (B, 6, H, W) — concatenated temporal pair
 
         Returns:
-            Feature tensor of shape (B, 768) — mean-pooled patch tokens
+            If pool=True: Feature tensor of shape (B, 768) — mean-pooled patch tokens
+            If pool=False: Patch tokens of shape (B, N, 768)
         """
         patch_tokens = self.backbone(x)  # (B, N, 768)
-        return patch_tokens.mean(dim=1)  # (B, 768)
+        if self.pool:
+            return patch_tokens.mean(dim=1)  # (B, 768)
+        return patch_tokens  # (B, N, 768)
 
 
 class SparshSpatialEncoder(nn.Module):
@@ -305,7 +309,7 @@ class SparshSpatialEncoder(nn.Module):
 
 
 def get_encoder(name: str, pretrained: bool = True,
-                freeze: bool = True) -> nn.Module:
+                freeze: bool = True, pool: bool = True) -> nn.Module:
     """Factory function to create vision encoders.
 
     Args:
@@ -313,8 +317,10 @@ def get_encoder(name: str, pretrained: bool = True,
             - resnet18, resnet34, resnet50
             - dinov2_small, dinov2_base, dinov2_large
             - clip_vit_b16, clip_vit_b32, clip_vit_l14
+            - sparsh_vitb16, sparsh_vitb14_3ch
         pretrained: Whether to load pretrained weights.
         freeze: Whether to freeze encoder weights (recommended for small datasets).
+        pool: Whether to pool patch tokens (only affects SparshEncoder).
 
     Returns:
         Encoder module with `output_dim` attribute.
@@ -326,7 +332,7 @@ def get_encoder(name: str, pretrained: bool = True,
     elif name.startswith("clip"):
         return CLIPEncoder(name, freeze)
     elif name == "sparsh_vitb16":
-        return SparshEncoder(freeze=freeze)
+        return SparshEncoder(freeze=freeze, pool=pool)
     elif name == "sparsh_vitb14_3ch":
         return SparshSpatialEncoder(freeze=freeze)
     else:

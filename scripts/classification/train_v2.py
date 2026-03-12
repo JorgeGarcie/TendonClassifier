@@ -425,7 +425,7 @@ def run_epoch(model, loader, optimizer, device, config, class_weights=None,
     ctx = torch.no_grad() if not train else torch.enable_grad()
     with ctx:
         for batch in loader:
-            # Handle spatial, temporal, and temporal_force modes
+            # Handle spatial, temporal, temporal_force, and temporal_v2 modes
             if model_type in ("temporal", "temporal_force"):
                 images, forces, labels, depth_gt, mask = batch
                 if model_type == "temporal":
@@ -433,7 +433,8 @@ def run_epoch(model, loader, optimizer, device, config, class_weights=None,
                 mask = mask.to(device)
             else:
                 images, forces, labels, depth_gt = batch
-                images = images.to(device)
+                if model_type not in ("spatial_force", "temporal_v2_force"):
+                    images = images.to(device)
                 mask = None
 
             forces = forces.to(device)
@@ -441,7 +442,15 @@ def run_epoch(model, loader, optimizer, device, config, class_weights=None,
             depth_gt = depth_gt.to(device)
 
             # Forward pass
-            if model_type == "temporal_force":
+            if model_type == "temporal_v2_force":
+                # Force-only temporal v2: forces is (B, 32, 6) window
+                output = model(forces)
+            elif model_type == "temporal_v2":
+                if use_force:
+                    output = model(images, forces)
+                else:
+                    output = model(images)
+            elif model_type == "temporal_force":
                 # Force-only temporal model: forces is (B, T, 6)
                 output = model(forces, mask)
             elif model_type == "temporal":
@@ -537,14 +546,22 @@ def collect_predictions(model, loader, device, config):
                 mask = mask.to(device)
             else:
                 images, forces, labels, depth_gt = batch
-                images = images.to(device)
+                if model_type not in ("spatial_force", "temporal_v2_force"):
+                    images = images.to(device)
                 mask = None
 
             forces = forces.to(device)
             labels = labels.to(device)
 
             # Forward pass
-            if model_type == "temporal_force":
+            if model_type == "temporal_v2_force":
+                output = model(forces)
+            elif model_type == "temporal_v2":
+                if use_force:
+                    output = model(images, forces)
+                else:
+                    output = model(images)
+            elif model_type == "temporal_force":
                 output = model(forces, mask)
             elif model_type == "temporal":
                 if use_force:
@@ -615,6 +632,7 @@ def run_training(config, sweep_mode: bool = False):
     # Dataset
     # Determine if we need temporal mode
     is_temporal = config.model.type in ("temporal", "temporal_force")
+    is_tv2 = config.model.type in ("temporal_v2", "temporal_v2_force")
     temporal_frames = config.model.temporal.num_frames if is_temporal else 1
     return_force_sequence = config.model.type == "temporal_force" or (
         config.model.type == "temporal" and config.model.use_force
@@ -635,6 +653,7 @@ def run_training(config, sweep_mode: bool = False):
         subtraction_type=config.data.subtraction.type,
         return_force_sequence=return_force_sequence,
         sparsh_temporal_stride=config.data.sparsh_temporal_stride,
+        force_window_path=config.data.force_window_path if is_tv2 else "",
         augmentation={
             "enabled": config.data.augmentation.enabled,
             "horizontal_flip": config.data.augmentation.horizontal_flip,

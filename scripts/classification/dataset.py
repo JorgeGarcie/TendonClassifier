@@ -106,6 +106,7 @@ class TendonDatasetV2(Dataset):
         augmentation: Optional[dict] = None,
         return_force_sequence: bool = False,  # For temporal_force model
         sparsh_temporal_stride: int = 0,  # >0: build 6ch temporal pairs for Sparsh
+        force_window_path: str = "",  # Path to precomputed force windows .npy
     ):
         """Initialize the dataset.
 
@@ -127,6 +128,7 @@ class TendonDatasetV2(Dataset):
             return_force_sequence: If True and temporal_frames > 1, return force sequence
         """
         self.df = pd.read_csv(manifest_csv)
+        self.df["_orig_row"] = range(len(self.df))
         self.img_size = img_size
         self.temporal_frames = temporal_frames
         self.subtraction_enabled = subtraction_enabled
@@ -203,6 +205,12 @@ class TendonDatasetV2(Dataset):
         # then filters df to exclude frames without valid partners.
         if sparsh_temporal_stride > 0:
             self._build_sparsh_pair_index()
+
+        # Load precomputed force windows (temporal_v2)
+        self.force_windows = None
+        if force_window_path:
+            self.force_windows = np.load(force_window_path, mmap_mode='r')
+            print(f"Loaded force windows: {self.force_windows.shape} from {force_window_path}")
 
     def _build_temporal_index(self):
         """Build index mapping each sample to its previous frames."""
@@ -534,10 +542,17 @@ class TendonDatasetV2(Dataset):
                 # Normalize after subtraction/augmentation
                 images = self._normalize_image(images)
 
-            # Force / torque (single frame)
-            force = self._normalize_force(torch.tensor(
-                [row[c] for c in self.FORCE_COLS], dtype=torch.float32
-            ))
+            # Force / torque (single frame or force window)
+            if self.force_windows is not None:
+                orig_row = self.df.iloc[idx]["_orig_row"]
+                force_window = torch.tensor(
+                    np.array(self.force_windows[orig_row]), dtype=torch.float32
+                )  # (32, 6)
+                force = self._normalize_force(force_window)
+            else:
+                force = self._normalize_force(torch.tensor(
+                    [row[c] for c in self.FORCE_COLS], dtype=torch.float32
+                ))
 
         # Label
         label = torch.tensor(int(row["tendon_type"]), dtype=torch.long)
