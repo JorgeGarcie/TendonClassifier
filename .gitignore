@@ -24,3 +24,4 @@ output
 # Logs and Configs Wandb
 wandb/
 *.safetensors
+checkpoints/sparsh
